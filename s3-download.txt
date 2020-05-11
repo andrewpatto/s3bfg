@@ -1,0 +1,110 @@
+sudo bash
+amazon-linux-extras install epel
+yum install nload sysstat parallel -y
+yum update -y
+yum upgrade -y
+mkdir /data
+mkfs.ext4 -E nodiscard /dev/nvme1n1
+# mkfs.xfs -f /dev/nvme1n1
+mount -o discard /dev/nvme1n1 /data
+
+
+
+curl -sS exit
+:q!
+ -o 00833.bam
+^C
+real	0m2.157s
+user	0m2.264s
+sys	0m1.594s
+
+
+
+[root@ip-10-1-1-68 data]# time ./do
+
+real	0m20.027s
+user	1m15.004s
+sys	1m31.023s
+
+[root@ip-10-1-1-68 data]# time ./do
+
+real	0m18.286s
+user	1m14.801s
+sys	1m31.394s
+
+
+[root@ip-10-1-1-68 data]# cat *.bam > t
+
+[root@ip-10-1-1-68 data]# ls -al t
+-rw-r--r-- 1 root root 29400082342 May  7 22:44 t
+[root@ip-10-1-1-68 data]# md5sum t
+ff5a614144fd8583e9d07370e1b83afa  t
+
+
+
+seq 3505 | parallel --rpl '{0} $_=sprintf("%05d",$_)' --jobs 32 "curl -sS https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.
+bam?partNumber={} -o {0}.bam"
+
+
+[root@ip-10-1-1-68 data]# time curl https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.bam > u
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+ 58 27.3G   58 15.9G    0     0  78.7M      0  0:05:56  0:03:27  0:02:29 81.9M
+
+ 100 27.3G  100 27.3G    0     0  76.3M      0  0:06:07  0:06:07 --:--:-- 72.3M
+
+real	6m7.460s
+user	0m33.803s
+sys	1m28.027s
+
+
+[root@ip-10-1-1-68 data]# time aws s3 cp s3://gos-test-cases-public/GIB1_8398.bam v
+download: s3://gos-test-cases-public/GIB1_8398.bam to ./v           
+
+real	1m57.365s
+user	2m0.499s
+sys	1m49.470s
+
+
+[root@ip-10-1-1-68 data]# time md5sum v
+ff5a614144fd8583e9d07370e1b83afa  v
+
+real	0m52.800s
+user	0m48.764s
+sys	0m4.036s
+
+
+
+m5d.2xlarge
+[root@ip-10-1-1-77 data]# time ./do
+
+real	1m33.630s
+user	1m43.883s
+sys	1m26.768s
+
+
+
+m5d.8xlarge (m5d.8xlarge	32	128	2 x 600 NVMe SSD	10	6,800)
+[root@ip-10-1-1-214 data]# time ./do
+
+real	0m24.786s
+user	1m35.545s
+sys	1m45.321s
+[root@ip-10-1-1-214 data]# rm -rf *.bam
+[root@ip-10-1-1-214 data]# time ./do
+
+real	0m24.452s
+user	1m38.565s
+sys	1m51.212s
+
+
+[root@ip-10-1-1-214 data]# cat *.bam | md5sum
+ff5a614144fd8583e9d07370e1b83afa  -
+[root@ip-10-1-1-214 data]# time cat *.bam | md5sum
+ff5a614144fd8583e9d07370e1b83afa  -
+
+real	0m53.864s
+user	0m49.568s
+sys	0m16.664s
+
+
