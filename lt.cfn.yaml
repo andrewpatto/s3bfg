@@ -1,0 +1,128 @@
+Description: Cloudformation template for AWS Batch resources.
+
+Outputs:
+  LaunchTemplate:
+    Description: Launch template
+    Export:
+      Name: !Sub '${AWS::StackName}-LaunchTemplate'
+    Value: !Ref 'LaunchTemplate'
+
+Parameters:
+  NetworkStackName:
+    Default: genovic-vpc
+    Description: The name of the VPC stack to be used by GenoVic Cromwell.
+    Type: String
+
+Resources:
+  SecurityGroup:
+    Properties:
+      GroupDescription: Security group for Patto.
+      GroupName: PattoSecurityGroup
+      SecurityGroupIngress:
+        - CidrIp: '0.0.0.0/0'
+          FromPort: 22
+          IpProtocol: tcp
+          ToPort: 22
+      VpcId: !ImportValue
+        Fn::Sub: ${NetworkStackName}-VPC
+    Type: AWS::EC2::SecurityGroup
+
+  LaunchTemplate:
+    Properties:
+      LaunchTemplateData:
+        BlockDeviceMappings:
+          - DeviceName: /dev/sdf
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdg
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdh
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdi
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdj
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdk
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdl
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+          - DeviceName: /dev/sdm
+            Ebs:
+              DeleteOnTermination: 'true'
+              Encrypted: 'true'
+              VolumeSize: 60
+              VolumeType: io1
+              Iops: 3000
+        EbsOptimized: 'true'
+        InstanceType: 'c5d.8xlarge'
+        ImageId: ami-01df117441f42cf5c
+        UserData: !Base64 |
+          MIME-Version: 1.0
+          Content-Type: multipart/mixed; boundary="==MYBOUNDARY=="
+
+          --==MYBOUNDARY==
+          Content-Type: text/cloud-config; charset="us-ascii"
+          bootcmd:
+            - while [ ! -b $(readlink -f /dev/sdf) ]; do echo "waiting for device /dev/sdf"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdg) ]; do echo "waiting for device /dev/sdg"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdh) ]; do echo "waiting for device /dev/sdh"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdi) ]; do echo "waiting for device /dev/sdi"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdj) ]; do echo "waiting for device /dev/sdj"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdk) ]; do echo "waiting for device /dev/sdk"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdl) ]; do echo "waiting for device /dev/sdl"; sleep 1 ; done
+            - while [ ! -b $(readlink -f /dev/sdm) ]; do echo "waiting for device /dev/sdm"; sleep 1 ; done
+
+          packages:
+            - amazon-efs-utils
+            - jq
+            - btrfs-progs
+            - python3-pip
+            - fio
+            - nvme-cli
+
+          runcmd:
+            - pip3 install -U awscli boto3
+          --==MYBOUNDARY==--
+      LaunchTemplateName: PattoLaunchTemplate
+    Type: AWS::EC2::LaunchTemplate
+
+#      - mdadm --create /dev/md0 --level=0 --chunk=64 --raid-devices=8 /dev/sdf /dev/sdg /dev/sdh /dev/sdi /dev/sdj /dev/sdk /dev/sdl /dev/sdm
+# nvme list | grep Instance | cut -f1 -d' '
+# mount -onoatime,nodiratime,logbufs=8,logbsize=256k,largeio,inode64,swalloc,allocsize=131072k /dev/sdX <mountpoint>
+
+# The example below shows the command for creating an XFS partition with larger inodes on 8 disks (where the number 8 does not include the number of RAID-5 or RAID-6 parity disks) and 128 KB chunk size.
+  #$ mkfs.xfs -d su=128k,sw=8 -l version=2,su=128k -isize=512 /dev/sdX

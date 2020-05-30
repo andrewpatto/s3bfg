@@ -8,7 +8,8 @@ mkfs.ext4 -E nodiscard /dev/nvme1n1
 # mkfs.xfs -f /dev/nvme1n1
 mount -o discard /dev/nvme1n1 /data
 
-
+ephemeral0 = /dev/nvme0n1
+ephemeral1 = /dev/nvme0n2
 
 curl -sS exit
 :q!
@@ -40,10 +41,11 @@ sys	1m31.394s
 [root@ip-10-1-1-68 data]# md5sum t
 ff5a614144fd8583e9d07370e1b83afa  t
 
+ seq 50 | parallel --jobs 3 "dig @8.8.8.8 {}.s3.ap-southeast-2.amazonaws.com +short" | sort | uniq
 
 
-seq 3505 | parallel --rpl '{0} $_=sprintf("%05d",$_)' --jobs 32 "curl -sS https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.
-bam?partNumber={} -o {0}.bam"
+
+seq 3505 | parallel --rpl '{0} $_=sprintf("%05d",$_)' --jobs 32 "curl -sS https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.bam?partNumber={} -o {0}.bam"
 
 
 [root@ip-10-1-1-68 data]# time curl https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.bam > u
@@ -108,3 +110,54 @@ user	0m49.568s
 sys	0m16.664s
 
 
+
+c5n.xlarge (to memory only)
+Overall: rate MiB/sec = 1494.9534 (copied 29400082342 bytes in 18.755169s)
+
+# seq -w 0 100 | parallel -j50 dig +short {}.s3.ap-southeast-2.amazonaws.com | sort | uniq | head -30 > ips.txt
+./s3zoom gos-test-cases-public /GIB1_8398.bam GIB1_8398.bam --memory -t 64 -s 128
+
+c5n.18xlarge (to memory only)
+./s3zoom gos-test-cases-public /GIB1_8398.bam GIB1_8398.bam -t 64 -s 64 --memory
+Overall: rate MiB/sec = 5408.3687 (copied 29400082342 bytes in 5.184207s)
+
+i3en24.xlarge
+
+Overall: rate MiB/sec = 2243.6746 (copied 29400082342 bytes in 12.496511s)
+Overall: rate MiB/sec = 5285.3364 (copied 29400082342 bytes in 5.3048854s)
+
+
+~/s3zoom gos-test-cases-public /GIB1_8398.bam GIB1_8398.bam -t 64 -s 128 --dns-server 10.1.0.2:53
+
+
+On a m5d.8xlarge the standard AWS file copy command achieves speeds of ~ 370 MiB/s despite the machine
+being capable of sustained 1100 MiB/s.
+
+```
+$ time aws s3 cp s3://gos-test-cases-public/bigfile.1 bf
+download: s3://gos-test-cases-public/bigfile.1 to ./bf
+real0m3.663s
+user0m3.293s
+sys0m2.910s
+
+$ time aws s3 cp s3://gos-test-cases-public/GIB1_8398.bam gi.bam
+Completed 3.6 GiB/27.4 GiB (373.3 MiB/s) with 1 file(s) remaining
+download: s3://gos-test-cases-public/GIB1_8398.bam to ./gi.bam
+real1m18.767s
+user1m17.518s
+sys1m21.088s
+
+$ time aws s3 cp s3://gos-test-cases-public/TD25-GV1041.bam 25.bam
+download: s3://gos-test-cases-public/TD25-GV1041.bam to ./25.bam
+real4m45.532s
+user4m46.695s
+sys4m54.834s
+```
+
+But using our tool
+
+~/s3zoom gos-test-cases-public /TD25-GV1041.bam td25 -t 64 -s 64 --dns-server 10.1.0.2:53 --dns-count 100
+Overall: rate MiB/sec = 1112.922 (copied 110999812957 bytes in 95.11688s)
+
+~/s3zoom gos-test-cases-public /GIB1_8398.bam GIB1_8398.bam -t 64 -s 64 --dns-server 10.1.0.2:53 --dns-count 100
+Overall: rate MiB/sec = 1112.7965 (copied 29400082342 bytes in 25.196074s)

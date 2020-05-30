@@ -1,187 +1,104 @@
-extern crate ureq;
 extern crate num_cpus;
+extern crate ureq;
 
-use std::str;
-
-use crate::datatype::BlockToStream;
-use tokio::net::{TcpStream, lookup_host};
-use tokio::prelude::*;
-use tokio::io::AsyncWriteExt;
-use tokio::io::AsyncBufReadExt;
-use tokio::time;
-use tokio::io::BufReader;
-use std::net::SocketAddr;
-use std::time::{Instant, Duration};
-use rand::Rng;
-use std::sync::{Mutex, Arc};
 use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader as IoBufReader};
+use std::net::{Ipv4Addr, SocketAddr};
+use std::{str, iter};
+use std::str::FromStr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
 use futures::join;
+use rand::{Rng, thread_rng};
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::ParallelIterator;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader as TokioBufReader;
+use tokio::net::{lookup_host, TcpStream};
+use tokio::net::UdpSocket;
+use tokio::prelude::*;
+use tokio::runtime::Runtime;
+use tokio::time;
+use trust_dns_client::client::{AsyncClient, Client, ClientHandle, SyncClient};
+use trust_dns_client::op::{DnsResponse, ResponseCode};
+use trust_dns_client::rr::{DNSClass, Name, RData, Record, RecordType};
+use trust_dns_client::rr::rdata::key::KEY;
+use trust_dns_client::udp::{UdpClientConnection, UdpClientStream};
 
-struct ConnectionTracker {
-    map: Mutex<BTreeMap<String, u32>>,
-    done: Mutex<bool>
-}
+use crate::datatype::{BlockToStream, ConnectionTracker};
+use rand::distributions::Alphanumeric;
 
-fn random_s3_host() -> String {
-    return format!("{}.s3.ap-southeast-2.amazonaws.com:80", rand::thread_rng()
-        .gen_ascii_chars()
-        .take(5)
-        .collect::<String>());
-}
+/*pub fn populate_by_file(connection_tracker: &Arc<ConnectionTracker>, filename: &str) -> io::Result<()> {
+    let ips_file = File::open(filename)?;
+    let ips_reader = IoBufReader::new(ips_file);
 
-#[tokio::main]
-pub async fn async_execute(blocks: &Vec<BlockToStream>, bucket_host: &str, bucket_name: &str, bucket_key: &str, write_filename: &str, prevent_duplicates: bool, start_jitter: f64) -> io::Result<()> {
+    let mut ips_db = connection_tracker.ips.lock().unwrap();
 
-    // we use a round robin collection of S3 IPs
-    let mut initial_db = BTreeMap::new();
-
-
-    // before we start though we initialise with whatever addresses we can get
-    for addr in tokio::net::lookup_host(random_s3_host()).await? {
-        println!("{}", addr);
-        initial_db.insert(addr.to_string(), 0);
+    for line in ips_reader.lines() {
+        ips_db.insert(line.unwrap(), 0);
     }
 
-    let db = Arc::new(ConnectionTracker {
-        map: Mutex::new(initial_db),
-        done: Mutex::new(false)
-    });
+    Ok(())
+}*/
 
-    join!(ip_generator(&db), handle_request(&db));
+/// Populates the connection tracker database with random S3 ip addresses.
+///
+/// # Examples
+///
+/// ```
+/// ```
+pub fn populate_by_dns(connection_tracker: &Arc<ConnectionTracker>, dns_server_addr: &SocketAddr, dns_threads: usize) -> io::Result<()> {
 
-    //let mut count = 0;
+    fn random_s3_fqdn() -> String {
+        let mut rng = thread_rng();
 
-    //loop {
+        // using a random bucket name  increases our chances of avoiding DNS caches along the way
+        // because this is going to a resolve we construct FQDN s3 names
+        let chars: String = iter::repeat(())
+            .map(|()| rng.sample(Alphanumeric))
+            .take(7)
+            .collect();
 
+        return format!("{}.s3.ap-southeast-2.amazonaws.com.", chars);
+    }
 
-/*        let when = Instant::now() + Duration::from_millis(100);
+    (0..dns_threads).into_par_iter()
+        .for_each(|_| {
+            let conn = UdpClientConnection::new(*dns_server_addr).unwrap();
 
-        let task = tokio::time::Delay::new(when);
+            // and then create the Client
+            let client = SyncClient::new(conn);
 
-        task.and_then(|_| async {
+            let name = Name::from_ascii(random_s3_fqdn()).unwrap();
 
+            // Send the query and get a message response, see RecordType for all supported options
+            let q = client.query(&name, DNSClass::IN, RecordType::A);
 
-                task.reset(Instant::now() + Duration::from_millis(100));
+            if q.is_ok() {
+                let response: DnsResponse = q.unwrap();
 
-                Ok(())
-            })
-            .map_err(|e| panic!("delay errored; err={:?}", e));
+                // we will not necessarily only get the DNS answer we ask for
+                let answers: &[Record] = response.answers();
 
-        task.await?; */
+                // quick process of the answers whilst we insert into our shared db
+                {
+                    let mut ips = connection_tracker.ips.lock().unwrap();
 
-       // count = count+1;
-
-       // if (count > 100) {
-       //     break;
-      //      }
-    //}
-
-   /* let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:8080").await?;
-    let mut stream = tokio::io::BufReader::new(tcp_stream);
-
-    stream.write_all(b"hello world!").await?;
-
-    let mut line = String::new();
-    stream.read_line(&mut line).await.unwrap();
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create(false)
-        .open(write_filename)
-        .await
-        .unwrap();
-
-    while let Some(v) = stream.next().await {
-        file.write_all(&v).await.unwrap();
-    } */
-
-
-  /*  let fetches = futures::stream::iter(
-        blocks.into_iter().map(|block| {
-            async move {
-                match reqwest::get(&path).await {
-                    Ok(resp) => {
-                        match resp.text().await {
-                            Ok(text) => {
-                                println!("RESPONSE: {} bytes from {}", text.len(), path);
+                    for ans in answers {
+                        // where the answer fits into the A data structure
+                        if let &RData::A(ref ip) = ans.rdata() {
+                            if !ips.contains_key(&ip.to_string()) {
+                                ips.insert(ip.to_string(), 0);
                             }
-                            Err(_) => println!("ERROR reading {}", path),
                         }
                     }
-                    Err(_) => println!("ERROR downloading {}", path),
                 }
             }
-        })
-    ).buffer_unordered(8).collect::<Vec<()>>();
 
-    println!("Waiting...");
+        });
 
-    fetches.await;
-
-    println!("got {:?}", res); */
     Ok(())
-}
-
-/**
- An IP generator that continually looks for new S3 IP addresses and places them into
- our connection list
- */
-async fn ip_generator(connection_tracker: &Arc<ConnectionTracker>) -> () {
-    let mut interval = time::interval(Duration::from_millis(100));
-
-    loop {
-        interval.tick().await;
-
-        let mut ips = connection_tracker.map.lock().unwrap();
-
-        for addr in tokio::net::lookup_host(random_s3_host()).await.unwrap() {
-            if !ips.contains_key(&addr.to_string()) {
-                println!("Discovered new S3 IP {}", addr);
-                ips.insert(addr.to_string(), 0);
-            }
-        }
-
-        let d = connection_tracker.done.lock().unwrap();
-
-        if !*d {
-            break;
-        }
-
-    }
-}
-
-
-async fn handle_request(connection_tracker: &Arc<ConnectionTracker>) -> () {
-
-    for x in 0..10 {
-        let mut dest: SocketAddr;
-
-        {
-            let mut ips = connection_tracker.map.lock().unwrap();
-
-            let which = rand::thread_rng().gen_range(0, ips.len());
-
-            let choice = ips.iter().nth(which).unwrap();
-            let ip = choice.0;
-            let count = choice.1;
-
-            println!("Chose {:?}", choice);
-        }
-
-        tokio::time::delay_for(time::Duration::new(1,0)).await;
-    }
-
-    let mut d = connection_tracker.done.lock().unwrap();
-
-    *d = true;
-
-    let mut ips = connection_tracker.map.lock().unwrap();
-
-    for ip in ips.iter() {
-        println!("Ending with {} used {} times", ip.0, ip.1);
-    }
-}
-
-pub async fn async_process_block(stream_id: &str, tcp_host_addr: SocketAddr, s3_bucket: &str, s3_key: &str, read_start: u64, read_length: u64, write_filename: &str, write_location: u64) {
-
 }
