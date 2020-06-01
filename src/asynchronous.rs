@@ -1,7 +1,3 @@
-extern crate hyper;
-extern crate num_cpus;
-extern crate ureq;
-
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io;
@@ -39,37 +35,38 @@ use tokio::fs::OpenOptions;
 use crate::datatype::BlockToStream;
 use futures::io::{Cursor, SeekFrom};
 use crate::copy_exact::copy_exact;
+use crate::config::Config;
 
 struct ConnectionTracker {
     map: Mutex<BTreeMap<String, u32>>,
     done: Mutex<bool>
 }
 
-/*fn random_s3_host() -> String {
-    return format!("{}.s3.ap-southeast-2.amazonaws.com:80", rand::thread_rng()
-        .gen()
-        .take(5)
-        .collect::<String>());
-} */
 
-//#[tokio::main]
-pub async fn async_execute(s3_ip: &SocketAddr, blocks: &Vec<BlockToStream>, bucket_name: &str, bucket_key: &str, write_filename: &str, memory_only: bool) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
     // because our start up is expensive we don't even want to go there will be nothing to do
     if blocks.is_empty() {
         return Ok(())
     }
 
+    let s3_ip = (ip, 443)
+        .to_socket_addrs()?
+        .next()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+
     // the underlying tcp stream for our connection to the designated S3 IP can be created first
     let tcp_stream = TcpStream::connect(&s3_ip).await?;
 
     // the TLS connector is the rusttls layer that will do the TLS handshake for us
-    let mut config = ClientConfig::new();
+    let mut tls_config = ClientConfig::new();
 
-    config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let connector = TlsConnector::from(Arc::new(config));
+    tls_config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+    let connector = TlsConnector::from(Arc::new(tls_config));
 
-    let domain = DNSNameRef::try_from_ascii_str("gos-test-cases-public.s3.ap-southeast-2.amazonaws.com")?;
+    let domain_str = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, cfg.input_bucket_region);
+
+    let domain = DNSNameRef::try_from_ascii_str(domain_str.as_str())?;
 //        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))?;
 
     let mut stream = connector.connect(domain, tcp_stream).await?;
@@ -78,7 +75,7 @@ pub async fn async_execute(s3_ip: &SocketAddr, blocks: &Vec<BlockToStream>, buck
 
     let mut buf_reader = BufReader::new(reader);
 
-    let mut file_writer = OpenOptions::new().write(true).create(false).open(write_filename).await?;
+    let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename).await?;
 
     let longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
 
@@ -96,11 +93,11 @@ pub async fn async_execute(s3_ip: &SocketAddr, blocks: &Vec<BlockToStream>, buck
         write!(
             req,
             "GET {} HTTP/1.1\r\n",
-            bucket_key
+            cfg.input_bucket_key
         )?;
 
         // headers
-        write!(req, "Host: {}.s3.ap-southeast-2.amazonaws.com\r\n", bucket_name)?;
+        write!(req, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region)?;
         write!(req, "User-Agent: s3bigfile\r\n")?;
         write!(req, "Accept: */*\r\n")?;
         write!(req, "Range: bytes={}-{}\r\n", b.start,  b.start + b.length - 1)?;
@@ -131,7 +128,7 @@ pub async fn async_execute(s3_ip: &SocketAddr, blocks: &Vec<BlockToStream>, buck
 
         let mut copied_bytes = 0u64;
 
-        if memory_only {
+        if cfg.memory_only {
             let copied_stats = copy_exact(&mut buf_reader, &mut memory_buffer, b.length).await?;
 
             copied_bytes = copied_stats.0;
@@ -148,7 +145,7 @@ pub async fn async_execute(s3_ip: &SocketAddr, blocks: &Vec<BlockToStream>, buck
 
         // let read_count = buf_reader.read_exact(&mut memory_buffer).await?;
 
-        println!("{}: {} in {} at {} MiB/s", c, copied_bytes, block_duration.as_secs_f32(), (copied_bytes as f32 / (1024.0*1024.0)) / block_duration.as_secs_f32());
+        println!("{}-{}: {} in {} at {} MiB/s", ip, c, copied_bytes, block_duration.as_secs_f32(), (copied_bytes as f32 / (1024.0*1024.0)) / block_duration.as_secs_f32());
 
         c += 1;
        // delay_for(Duration::from_secs(5)).await;

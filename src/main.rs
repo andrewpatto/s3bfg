@@ -1,49 +1,47 @@
-extern crate ureq;
-extern crate num_cpus;
 extern crate nix;
-extern crate hyper;
+extern crate num_cpus;
+extern crate ureq;
+
+use std::{env, io, thread};
+use std::borrow::Borrow;
+use std::collections::{BTreeMap, HashSet};
+use std::convert::TryInto;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, SeekFrom};
+use std::io::prelude::*;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::os::unix::io::AsRawFd;
+use std::str;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::thread::sleep;
+use std::time::{Duration, Instant};
+use tokio::time::{delay_for};
+use futures::future::join_all;
+use futures::TryFutureExt;
+use httparse::parse_headers;
+use humansize::{file_size_opts as options, FileSize};
+#[cfg(target_os = "linux")]
+use nix::fcntl::fallocate;
+#[cfg(target_os = "linux")]
+use nix::fcntl::FallocateFlags;
+use rand::Rng;
+use resolve::resolve_host;
+use tokio::runtime::{Builder, Runtime};
+
+use crate::asynchronous::async_execute;
+use crate::config::Config;
+use crate::datatype::{BlockToStream, ConnectionTracker};
+use crate::ips::populate_a_dns;
+use crate::synchronous::sync_execute;
 
 mod datatype;
 mod asynchronous;
 mod synchronous;
 mod ips;
 mod copy_exact;
-
-use std::net::{TcpStream, ToSocketAddrs, IpAddr, SocketAddr};
-
-use std::{io, thread, env};
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::{SeekFrom, BufReader};
-use std::time::{Duration, Instant};
-use std::str;
-use std::os::unix::io::AsRawFd;
-use progress_streams::ProgressReader;
-use resolve::resolve_host;
-use rayon::prelude::*;
-use std::thread::sleep;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicUsize;
-use std::borrow::Borrow;
-use clap::{self, Arg, App};
-use httparse::parse_headers;
-use humansize::{FileSize, file_size_opts as options};
-use std::collections::{HashSet, BTreeMap};
-use rand::Rng;
-
-#[cfg(target_os = "linux")]
-use nix::fcntl::fallocate;
-#[cfg(target_os = "linux")]
-use nix::fcntl::FallocateFlags;
-
-use crate::datatype::{BlockToStream, ConnectionTracker};
-use crate::synchronous::sync_execute;
-use crate::asynchronous::async_execute;
-use crate::ips::populate_by_dns;
-use std::convert::TryInto;
-use tokio::runtime::{Runtime, Builder};
-use futures::TryFutureExt;
+mod config;
 
 //  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080
 // m5d.8xlarge Overall: rate MiB/sec = 1131.3945 (copied 29400082342 bytes in 24.781897s)
@@ -56,89 +54,19 @@ use futures::TryFutureExt;
 // Overall: rate MiB/sec = 895.3182 (copied 29400082342 bytes in 31.316357s)
 // (base) [ec2-user@ip-10-1-1-63 data]$  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080 -t 16
 
-const S3_DOMAIN_SUFFIX: &str = ".s3.ap-southeast-2.amazonaws.com";
-
-
 fn main() -> std::io::Result<()> {
-    let num_cpus = num_cpus::get();
+    let config = Config::new();
 
-    let matches = App::new("s3zoom")
-        .version("1.0")
-        .author("AP")
-        .about("Copies S3 files real quick")
-        .arg(Arg::with_name("INPUTBUCKET")
-            .about("Sets the S3 bucket name of the input file")
-            .required(true)
-            .index(1))
-        .arg(Arg::with_name("INPUTKEY")
-            .about("Sets the S3 key of the input file")
-            .required(true)
-            .index(2))
-        .arg(Arg::with_name("OUTPUTFILE")
-            .about("Sets the output file to write to")
-            .required(true)
-            .index(3))
-        .arg(Arg::with_name("segment-size")
-            .short('s')
-            .long("size")
-            .about("Sets the size in mebibytes of each independently streamed part of the file - multiples of 8 will generally match S3 part sizing")
-            .takes_value(true))
-        .arg(Arg::with_name("threads")
-            .short('t')
-            .long("threads")
-            .about("Sets the number of threads to use to execute the streaming gets, default is detected core count")
-            .default_value(num_cpus.to_string().as_str())
-            .takes_value(true))
-        .arg(Arg::with_name("dns-server")
-            .long("dns-server")
-            .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses")
-            .default_value("169.254.169.253:53")
-            .takes_value(true))
-        .arg(Arg::with_name("dns-count")
-            .long("dns-count")
-            .about("Sets the number of attempts that will be made to obtain distinct S3 bucket IP addresses")
-            .takes_value(true))
-        .arg(Arg::with_name("memory")
-            .long("memory")
-            .about("If specified tells us to just transfer the data to memory and not then write it out to disk"))
-        .arg(Arg::with_name("fallocate")
-            .long("fallocate")
-            .about("If specified tells us to create the blank destination file using fallocate()"))
-        .arg(Arg::with_name("basic")
-            .long("basic")
-            .about("If specified tells us to use basic tokio runtime rather than threaded"))
-        .get_matches();
-
-
-    // the file to copy and where to go
-    let bucket_name = String::from(matches.value_of("INPUTBUCKET").unwrap());
-    let bucket_key = String::from(matches.value_of("INPUTKEY").unwrap());
-    let write_filename = String::from(matches.value_of("OUTPUTFILE").unwrap());
-
-    // how to split up the file
-    let segment_size = matches.value_of_t::<u64>("segment-size").unwrap_or(8);
-    let segment_size_bytes = segment_size * 1024 * 1024;
-    let threads = matches.value_of_t::<usize>("threads").unwrap();
-
-    // DNS settings
-    let dns_server = String::from(matches.value_of("dns-server").unwrap());
-    let dns_count = matches.value_of_t::<usize>("dns-count").unwrap_or(threads * 2);
-
-    //
-    let memory_only = matches.is_present("memory");
-    let fallocate = matches.is_present("fallocate");
-    let basic = matches.is_present("basic");
-
-    if memory_only {
-        println!("Copying file s3://{}{} to memory", bucket_name, bucket_key);
+    if config.memory_only {
+        println!("Copying file s3://{}{} (region {}) to memory", config.input_bucket_name, config.input_bucket_key, config.input_bucket_region);
     } else {
-        println!("Copying file s3://{}{} to {}", bucket_name, bucket_key, write_filename);
+        println!("Copying file s3://{}{} (region {}) to {}", config.input_bucket_name, config.input_bucket_key, config.input_bucket_region, config.output_write_filename);
     }
 
-    let total_size_bytes: u64 = head_size_from_s3(bucket_name.as_str(), bucket_key.as_str()).unwrap_or_default();
+    let total_size_bytes: u64 = head_size_from_s3(config.input_bucket_name.as_str(), config.input_bucket_key.as_str(), config.input_bucket_region.as_str()).unwrap_or_default();
 
-    if !memory_only {
-        create_empty_target_file(write_filename.as_str(), total_size_bytes.try_into().unwrap()).unwrap();
+    if !config.memory_only {
+        create_empty_target_file(config.output_write_filename.as_str(), total_size_bytes.try_into().unwrap())?;
     }
 
     let mut blocks = vec![];
@@ -147,12 +75,12 @@ fn main() -> std::io::Result<()> {
     // splitting up of a file we could potentially do something more sophisticated
     {
         let mut starter: u64 = 0;
-        let full_chunks = total_size_bytes / segment_size_bytes;
-        let leftover_chunk_size_bytes = total_size_bytes % segment_size_bytes;
+        let full_chunks = total_size_bytes / config.segment_size_bytes;
+        let leftover_chunk_size_bytes = total_size_bytes % config.segment_size_bytes;
 
         for x in 0..full_chunks {
-            blocks.push(BlockToStream { start: starter, length: segment_size_bytes });
-            starter += segment_size_bytes;
+            blocks.push(BlockToStream { start: starter, length: config.segment_size_bytes });
+            starter += config.segment_size_bytes;
         }
 
         if leftover_chunk_size_bytes > 0 {
@@ -162,43 +90,12 @@ fn main() -> std::io::Result<()> {
         println!("File size is {} which means {} segments of chosen size {} MiB + leftover {}",
                  total_size_bytes.file_size(options::BINARY).unwrap(),
                  full_chunks,
-                 segment_size,
+                 config.segment_size_mibs,
                  leftover_chunk_size_bytes.file_size(options::BINARY).unwrap());
     }
 
-    //rayon::ThreadPoolBuilder::new().num_threads(threads).build_global().unwrap();
-
-    //println!("Thread pool is set up to operate with {} executions in parallel",threads);
-
-    // start with the tcp destination having a host name
-    let bucket_host: String = format!("{}.s3.ap-southeast-2.amazonaws.com", bucket_name);
-    let bucket_host_with_port: String = format!("{}.s3.ap-southeast-2.amazonaws.com:80", bucket_name);
-
-    let total_started = Instant::now();
-
-    // let address = dns_server.parse().unwrap();
-
-    let connection_tracker = Arc::new(ConnectionTracker::new());
-
-    /*  {
-          let dns_started = Instant::now();
-
-          populate_by_dns(&connection_tracker, &address, dns_count).unwrap();
-
-          let dns_duration = Instant::now().duration_since(dns_started);
-          let ips_db = connection_tracker.ips.lock().unwrap();
-
-          println!("Discovered {} distinct S3 endpoints in {}s",
-                   ips_db.len(), dns_duration.as_secs_f32());
-      } */
-
-    let s3_ip = ("52.95.132.218", 443)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
-
-
-    let mut rt = if basic {
+    // a tokio runtime we will use for our async io
+    let mut rt = if config.basic {
         Builder::new()
             .enable_all()
             .basic_scheduler()
@@ -208,24 +105,89 @@ fn main() -> std::io::Result<()> {
         Builder::new()
             .enable_all()
             .threaded_scheduler()
+            .core_threads(1)
+            .max_threads(2)
             .build()
             .unwrap()
     };
 
-    // spawn the server task
-    rt.block_on(async move {
-        let r = async_execute(&s3_ip, &blocks, &bucket_name, &bucket_key, &write_filename, memory_only).await;
+    //println!("Thread pool is set up to operate with {} executions in parallel",threads);
 
-        println!("{:?}", r.unwrap());
-    });
+    // start with the tcp destination having a host name
+    let bucket_host: String = format!("{}.s3-{}.amazonaws.com", config.input_bucket_name, config.input_bucket_region);
+    let bucket_host_with_port: String = format!("{}.s3-{}.amazonaws.com:80", config.input_bucket_name, config.input_bucket_region);
+
+    let total_started = Instant::now();
+
+    let connection_tracker = Arc::new(ConnectionTracker::new());
+
+    {
+        let dns_started = Instant::now();
+
+        let mut dns_rt = Builder::new()
+            .enable_all()
+            .threaded_scheduler()
+            .build()
+            .unwrap();
+
+        for round in 0..config.dns_rounds {
+            let mut dns_futures1 = Vec::new();
+
+            for c in 0..config.dns_concurrent {
+                dns_futures1.push(populate_a_dns(&connection_tracker, &config));
+            }
+
+            dns_rt.block_on(join_all(dns_futures1));
+
+            if connection_tracker.ips.lock().unwrap().len() < config.connections {
+                println!("Didn't find enough distinct S3 endpoints in round {} so trying again", round+1);
+                sleep(config.dns_round_delay);
+            } else {
+                break;
+            }
+        }
+
+        let dns_duration = Instant::now().duration_since(dns_started);
+
+        let ips_db = connection_tracker.ips.lock().unwrap();
+
+        println!("Discovered {} distinct S3 endpoints in {}s",
+                 ips_db.len(), dns_duration.as_secs_f32());
+    }
+
+
+    let ips_db = connection_tracker.ips.lock().unwrap();
+
+    let mut futures = Vec::new();
+
+    {
+        let mut starter: usize = 0;
+
+        let connectors = if config.connections < ips_db.len() { config.connections } else { ips_db.len() };
+
+
+        let connection_chunk = blocks.len() / connectors;
+
+        for (count, (ip, _)) in ips_db.iter().enumerate() {
+            if count >= connectors {
+                break;
+            }
+
+            futures.push(async_execute(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
+
+            starter += connection_chunk;
+        }
+    }
+
+    println!("Using {} connections to S3", futures.len());
+
+    // spawn a task waiting on all the async streams to finish
+    rt.block_on(join_all(futures));
 
     rt.shutdown_timeout(Duration::from_millis(100));
 
     /*    sync_execute(&connection_tracker, &blocks, &bucket_host, &bucket_name, &bucket_key, &write_filename, memory_only);
 
-        //if cfg!(unix) {
-        //    options.custom_flags(libc::O_EXCL);
-        //}
         let ips = connection_tracker.ips.lock().unwrap();
 
         for ip in ips.iter() {
@@ -244,8 +206,8 @@ fn main() -> std::io::Result<()> {
 }
 
 // we need to start by working out how large the actual file is before segmenting
-fn head_size_from_s3(s3_bucket: &str, s3_key: &str) -> Result<u64, &'static str> {
-    let src = format!("http://{}{}{}", s3_bucket, S3_DOMAIN_SUFFIX, s3_key);
+fn head_size_from_s3(s3_bucket: &str, s3_key: &str, s3_region: &str) -> Result<u64, &'static str> {
+    let src = format!("https://{}.s3-{}.amazonaws.com{}", s3_bucket, s3_region, s3_key);
     let headresp = ureq::head(src.as_str())
         //.set("X-My-Header", "Secret")
         .call();
@@ -280,3 +242,24 @@ fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io:
 
     Ok(file)
 }
+
+/*
+ssm-user@ip-172-31-8-71:~$ curl -s http://169.254.169.254/latest/dynamic/instance-identity/document
+{
+  "accountId" : "667213777749",
+  "architecture" : "x86_64",
+  "availabilityZone" : "us-west-2c",
+  "billingProducts" : null,
+  "devpayProductCodes" : null,
+  "marketplaceProductCodes" : null,
+  "imageId" : "ami-003634241a8fcdec0",
+  "instanceId" : "i-08f9a00855fb6a2c0",
+  "instanceType" : "m5dn.8xlarge",
+  "kernelId" : null,
+  "pendingTime" : "2020-05-31T03:37:57Z",
+  "privateIp" : "172.31.8.71",
+  "ramdiskId" : null,
+  "region" : "us-west-2",
+  "version" : "2017-09-30"
+}
+ */

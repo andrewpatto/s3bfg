@@ -134,7 +134,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         // or onto a disk.. memory only allows benchmarking of networking without
         // disk io complicating things
         if (!memory_only) {
-             let mut oo = OpenOptions::new()
+             let oo = OpenOptions::new()
                 .write(true)
                 .create(false)
 //                 .custom_flags(OFlag::O_DIRECT.bits())

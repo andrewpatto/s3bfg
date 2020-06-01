@@ -126,3 +126,5 @@ Resources:
 
 # The example below shows the command for creating an XFS partition with larger inodes on 8 disks (where the number 8 does not include the number of RAID-5 or RAID-6 parity disks) and 128 KB chunk size.
   #$ mkfs.xfs -d su=128k,sw=8 -l version=2,su=128k -isize=512 /dev/sdX
+
+# curl -s http://169.254.169.254/latest/dynamic/instance-identity/document | jq .region -r

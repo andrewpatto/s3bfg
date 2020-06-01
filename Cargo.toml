@@ -1,5 +1,5 @@
 [package]
-name = "s3zoom"
+name = "s3bigfile"
 version = "0.1.0"
 authors = ["Andrew Patterson <andrew@patto.net>"]
 edition = "2018"
@@ -10,8 +10,6 @@ edition = "2018"
 ureq = "*"
 rayon = "*"
 resolve = "*"
-hyper = "*"
-hyper-tls = "*"
 httparse = "*"
 progress-streams = "*"
 clap = "3.0.0-beta.1"
