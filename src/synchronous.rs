@@ -59,17 +59,14 @@ pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<Bl
 
             sync_stream_range_from_s3(stream_id.as_str(),
                                       tcp_addr,
-                                      &config.input_bucket_name,
-                                      &config.input_bucket_key,
                                       p.start,
                                       p.length,
-                                      &config.output_write_filename,
                                       p.start,
-                                        config.memory_only);
+                                        config);
         });
 }
 
-fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: &str, s3_key: &str, read_start: u64, read_length: u64, write_filename: &str, write_location: u64, memory_only: bool) {
+fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start: u64, read_length: u64, write_location: u64, cfg: &Config) {
     // these are all our benchmark points - set initially to be the starting time
     let now_started = Instant::now();
     let mut now_connected = now_started.clone();
@@ -88,10 +85,10 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         write!(
             prelude,
             "GET {} HTTP/1.1\r\n",
-            s3_key
+            cfg.input_bucket_key
         ).unwrap();
 
-        write!(prelude, "Host: {}.s3.ap-southeast-2.amazonaws.com\r\n", s3_bucket).unwrap();
+        write!(prelude, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region).unwrap();
         write!(prelude, "User-Agent: s3bigfile\r\n").unwrap();
         write!(prelude, "Accept: */*\r\n").unwrap();
         write!(prelude, "Range: bytes={}-{}\r\n", read_start, read_start + read_length - 1).unwrap();
@@ -129,7 +126,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         // we can either just write into a memory buffer we then throw away
         // or onto a disk.. memory only allows benchmarking of networking without
         // disk io complicating things
-        if !memory_only {
+        if !cfg.memory_only {
              let oo = OpenOptions::new()
                 .write(true)
                 .create(false)
@@ -138,7 +135,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
 
 //            println!("{:?}", oo);
 
-            let disk_buffer = oo.open(write_filename)
+            let disk_buffer = oo.open(&cfg.output_write_filename)
                 .unwrap();
 
             disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location).unwrap();
