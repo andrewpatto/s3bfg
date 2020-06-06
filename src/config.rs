@@ -149,8 +149,8 @@ impl Config {
             if resp.status() == 200 {
                 let json = resp.into_json().unwrap();
 
-                aws_instance_type = String::from(json["instanceType"].as_str());
-                region = String::from(json["region"].as_str());
+                aws_instance_type = String::from(json["instanceType"].as_str().unwrap());
+                region = String::from(json["region"].as_str().unwrap());
 
                 // running in AWS means we have a more sensible default DNS server - but we
                 // only want to use if one wasn't explicitly given on the command line
