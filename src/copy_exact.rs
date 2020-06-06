@@ -1,18 +1,12 @@
-use tokio::io::{
-    AsyncRead,
-    AsyncReadExt,
-    AsyncWrite,
-    AsyncWriteExt,
-    BufReader,
-    BufWriter,
-    AsyncBufRead,
-    AsyncBufReadExt,
-    copy, split
-};
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+
 use futures::{Future, ready};
+use tokio::io::{
+    AsyncRead,
+    AsyncWrite,
+};
 
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]

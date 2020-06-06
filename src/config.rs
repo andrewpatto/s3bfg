@@ -2,6 +2,9 @@ use clap::{self, Arg, App};
 use std::path::Path;
 use std::time::Duration;
 
+/// Stores information entered by the user and derived from the environment
+/// for this particular run of the tool.
+///
 pub struct Config {
     pub input_bucket_name: String,
     pub input_bucket_key: String,
@@ -23,6 +26,7 @@ pub struct Config {
 
     pub fallocate: bool,
     pub basic: bool,
+    pub asynchronous: bool
 }
 
 const S3_REGION_ARG: &str = "s3-region";
@@ -111,11 +115,28 @@ impl Config {
             .arg(Arg::with_name("basic")
                 .long("basic")
                 .about("If specified tells us to use basic tokio runtime rather than threaded"))
+            .arg(Arg::with_name("async")
+                .long("async")
+                .about("If specified tells us to use async code rather than sync"))
+            .arg(Arg::with_name("not-ec2")
+                .long("not-ec2")
+                .about("If specified tells us that we are definitely not on an EC2 instance and we should not attempt to use EC2 tricks"))
+
             .get_matches();
+
+        let mut dns_server = String::from(matches.value_of("dns-server").unwrap());
 
         // try to work out if we are running on an EC2 instance or not, and if so change the
         // defaults
         // 169.254.169.253:53
+        let not_ec2 = matches.is_present("not-ec2");
+
+        if !not_ec2 {
+            // we *may* be running on an EC2 instance in which case we have a few tricks up our sleeve
+
+
+            dns_server = String::from("1213:34");
+        }
 
         let in_key = String::from(matches.value_of("INPUTKEY").unwrap());
         let out_current_dir = Path::new(&in_key).file_name().unwrap().to_str().unwrap();
@@ -126,7 +147,7 @@ impl Config {
             input_bucket_region: String::from(matches.value_of("s3-region").unwrap_or("ap-southeast-2")),
 
             // DNS settings
-            dns_server: String::from(matches.value_of("dns-server").unwrap()),
+            dns_server,
             dns_concurrent: matches.value_of_t::<usize>("dns-concurrent").unwrap_or(24),
             dns_rounds: matches.value_of_t::<usize>("dns-rounds").unwrap(),
             dns_round_delay: Duration::from_millis(matches.value_of_t::<u64>("dns-round-delay").unwrap()),
@@ -142,6 +163,7 @@ impl Config {
 
             fallocate: matches.is_present("fallocate"),
             basic: matches.is_present("basic"),
+            asynchronous: matches.is_present("async"),
         }
     }
 }

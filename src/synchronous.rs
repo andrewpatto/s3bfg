@@ -26,17 +26,14 @@ use humansize::{FileSize, file_size_opts as options};
 use std::collections::{HashSet, BTreeMap};
 use rand::Rng;
 use crate::datatype::{BlockToStream, ConnectionTracker};
-use trust_dns_client::client::{Client, ClientConnection, SyncClient};
-use trust_dns_client::udp::UdpClientConnection;
-use trust_dns_client::op::DnsResponse;
-use trust_dns_client::rr::{DNSClass, Name, RData, Record, RecordType};
 use std::str::FromStr;
 use std::net::Ipv4Addr;
+use crate::config::Config;
 
 const O_DIRECT: i32 = 0x4000;
 
 
-pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, bucket_host: &str, bucket_name: &str, bucket_key: &str, write_filename: &str, memory_only: bool) {
+pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {
 
     blocks.into_par_iter()
         .for_each(|p| {
@@ -61,13 +58,13 @@ pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<Bl
 
             sync_stream_range_from_s3(stream_id.as_str(),
                                       tcp_addr,
-                                      bucket_name,
-                                      bucket_key,
+                                      &config.input_bucket_name,
+                                      &config.input_bucket_key,
                                       p.start,
                                       p.length,
-                                      write_filename,
+                                      &config.output_write_filename,
                                       p.start,
-                                        memory_only);
+                                        config.memory_only);
         });
 }
 
@@ -75,8 +72,6 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
     // these are all our benchmark points - set initially to be the starting time
     let now_started = Instant::now();
     let mut now_connected = now_started.clone();
-    let mut now_request_sent = now_started.clone();
-    let mut now_response_header_received = now_started.clone();
     let mut now_response_body_received = now_started.clone();
 
     if let Ok(mut tcp_stream) = TcpStream::connect(SocketAddr::new(tcp_host_addr, 80)) {
@@ -125,7 +120,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         }
 
         // stream down into memory
-        let mut copied_bytes = 0u64;
+        let mut copied_bytes: u64;
         let mut memory_buffer = Cursor::new(vec![0; read_length as usize]);
 
         copied_bytes = io::copy(&mut reader, &mut memory_buffer).unwrap();
@@ -142,15 +137,10 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
 
 //            println!("{:?}", oo);
 
-            let mut disk_buffer = oo.open(write_filename)
+            let disk_buffer = oo.open(write_filename)
                 .unwrap();
 
-            // let mut writer = FileWriter::with_capacity(1024 * 1024, disk_buffer);
-            // disk_buffer.seek(SeekFrom::Start(write_location.into())).unwrap();
-
             disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location).unwrap();
-
-            // copied_bytes = io::copy(&mut reader, &mut writer).unwrap();
         }
 
         now_response_body_received = Instant::now();

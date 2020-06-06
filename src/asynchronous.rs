@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::fs::File;
 use std::io;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
@@ -7,10 +6,7 @@ use std::path::PathBuf;
 use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::time;
 
-use futures::join;
-use rand::Rng;
 use tokio::io::{
     AsyncRead,
     AsyncReadExt,
@@ -37,11 +33,6 @@ use futures::io::{Cursor, SeekFrom};
 use crate::copy_exact::copy_exact;
 use crate::config::Config;
 
-struct ConnectionTracker {
-    map: Mutex<BTreeMap<String, u32>>,
-    done: Mutex<bool>
-}
-
 
 pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
@@ -49,6 +40,9 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
     if blocks.is_empty() {
         return Ok(())
     }
+
+    // if we want to allocate single buffers then we need to know the max size we will face
+    let longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
 
     let s3_ip = (ip, 443)
         .to_socket_addrs()?
@@ -77,7 +71,6 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
 
     let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename).await?;
 
-    let longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
 
     let mut memory_buffer = vec![0u8; longest as usize];
 
@@ -126,12 +119,10 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
             }
         }
 
-        let mut copied_bytes = 0u64;
+        let mut copied_bytes: u64;
 
         if cfg.memory_only {
-            let copied_stats = copy_exact(&mut buf_reader, &mut memory_buffer, b.length).await?;
-
-            copied_bytes = copied_stats.0;
+            copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;
         }
         else {
             file_writer.seek(SeekFrom::Start(b.start)).await?;
@@ -141,22 +132,13 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
             copied_bytes = copied_stats.0;
         }
 
-        let block_duration = Instant::now().duration_since(block_started);
+        assert_eq!(copied_bytes, b.length);
 
-        // let read_count = buf_reader.read_exact(&mut memory_buffer).await?;
+        let block_duration = Instant::now().duration_since(block_started);
 
         println!("{}-{}: {} in {} at {} MiB/s", ip, c, copied_bytes, block_duration.as_secs_f32(), (copied_bytes as f32 / (1024.0*1024.0)) / block_duration.as_secs_f32());
 
         c += 1;
-       // delay_for(Duration::from_secs(5)).await;
-
-       // println!("sleep ended");
-
-        //let num_bytes = buf_reader.read_line(&mut buf).await;
-
-        //println!("{:?}", num_bytes)
-
-        // stream_http_block(&stream, bucket_name, bucket_key, b.start, b.length).await;
     }
 
 
@@ -203,53 +185,6 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
 
 
 
-   // join!(ip_generator(&db), handle_request(&db));
-
-    //let mut count = 0;
-
-    //loop {
-
-
-/*        let when = Instant::now() + Duration::from_millis(100);
-
-        let task = tokio::time::Delay::new(when);
-
-        task.and_then(|_| async {
-
-
-                task.reset(Instant::now() + Duration::from_millis(100));
-
-                Ok(())
-            })
-            .map_err(|e| panic!("delay errored; err={:?}", e));
-
-        task.await?; */
-
-       // count = count+1;
-
-       // if (count > 100) {
-       //     break;
-      //      }
-    //}
-
-   /* let tcp_stream = tokio::net::TcpStream::connect("127.0.0.1:8080").await?;
-    let mut stream = tokio::io::BufReader::new(tcp_stream);
-
-    stream.write_all(b"hello world!").await?;
-
-    let mut line = String::new();
-    stream.read_line(&mut line).await.unwrap();
-
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create(false)
-        .open(write_filename)
-        .await
-        .unwrap();
-
-    while let Some(v) = stream.next().await {
-        file.write_all(&v).await.unwrap();
-    } */
 
 
   /*  let fetches = futures::stream::iter(
@@ -275,43 +210,5 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
     fetches.await;
 
     println!("got {:?}", res); */
-
-}
-
-
-
-
-async fn handle_request(connection_tracker: &Arc<ConnectionTracker>) -> () {
-
-    for x in 0..10 {
-        let mut dest: SocketAddr;
-
-        {
-            let mut ips = connection_tracker.map.lock().unwrap();
-
-            let which = rand::thread_rng().gen_range(0, ips.len());
-
-            let choice = ips.iter().nth(which).unwrap();
-            let ip = choice.0;
-            let count = choice.1;
-
-            println!("Chose {:?}", choice);
-        }
-
-        tokio::time::delay_for(time::Duration::new(1,0)).await;
-    }
-
-    let mut d = connection_tracker.done.lock().unwrap();
-
-    *d = true;
-
-    let ips = connection_tracker.map.lock().unwrap();
-
-    for ip in ips.iter() {
-        println!("Ending with {} used {} times", ip.0, ip.1);
-    }
-}
-
-pub async fn async_process_block(stream_id: &str, tcp_host_addr: SocketAddr, s3_bucket: &str, s3_key: &str, read_start: u64, read_length: u64, write_filename: &str, write_location: u64) {
 
 }

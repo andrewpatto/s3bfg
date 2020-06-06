@@ -1,6 +1,6 @@
 [package]
-name = "s3bigfile"
-version = "0.1.0"
+name = "s3bfg"
+version = "0.2.0"
 authors = ["Andrew Patterson <andrew@patto.net>"]
 edition = "2018"
 

@@ -2,37 +2,21 @@ extern crate nix;
 extern crate num_cpus;
 extern crate ureq;
 
-use std::{env, io, thread};
-use std::borrow::Borrow;
-use std::collections::{BTreeMap, HashSet};
 use std::convert::TryInto;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, SeekFrom};
-use std::io::prelude::*;
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::os::unix::io::AsRawFd;
 use std::str;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::AtomicUsize;
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
-use tokio::time::{delay_for};
+
 use futures::future::join_all;
-use futures::TryFutureExt;
-use httparse::parse_headers;
 use humansize::{file_size_opts as options, FileSize};
-#[cfg(target_os = "linux")]
-use nix::fcntl::fallocate;
-#[cfg(target_os = "linux")]
-use nix::fcntl::FallocateFlags;
-use rand::Rng;
 use resolve::resolve_host;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::asynchronous::async_execute;
 use crate::config::Config;
 use crate::datatype::{BlockToStream, ConnectionTracker};
+use crate::empty_file::create_empty_target_file;
 use crate::ips::populate_a_dns;
 use crate::synchronous::sync_execute;
 
@@ -42,6 +26,7 @@ mod synchronous;
 mod ips;
 mod copy_exact;
 mod config;
+mod empty_file;
 
 //  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080
 // m5d.8xlarge Overall: rate MiB/sec = 1131.3945 (copied 29400082342 bytes in 24.781897s)
@@ -78,7 +63,7 @@ fn main() -> std::io::Result<()> {
         let full_chunks = total_size_bytes / config.segment_size_bytes;
         let leftover_chunk_size_bytes = total_size_bytes % config.segment_size_bytes;
 
-        for x in 0..full_chunks {
+        for _x in 0..full_chunks {
             blocks.push(BlockToStream { start: starter, length: config.segment_size_bytes });
             starter += config.segment_size_bytes;
         }
@@ -94,28 +79,9 @@ fn main() -> std::io::Result<()> {
                  leftover_chunk_size_bytes.file_size(options::BINARY).unwrap());
     }
 
-    // a tokio runtime we will use for our async io
-    let mut rt = if config.basic {
-        Builder::new()
-            .enable_all()
-            .basic_scheduler()
-            .build()
-            .unwrap()
-    } else {
-        Builder::new()
-            .enable_all()
-            .threaded_scheduler()
-            .core_threads(1)
-            .max_threads(2)
-            .build()
-            .unwrap()
-    };
 
     //println!("Thread pool is set up to operate with {} executions in parallel",threads);
 
-    // start with the tcp destination having a host name
-    let bucket_host: String = format!("{}.s3-{}.amazonaws.com", config.input_bucket_name, config.input_bucket_region);
-    let bucket_host_with_port: String = format!("{}.s3-{}.amazonaws.com:80", config.input_bucket_name, config.input_bucket_region);
 
     let total_started = Instant::now();
 
@@ -133,7 +99,7 @@ fn main() -> std::io::Result<()> {
         for round in 0..config.dns_rounds {
             let mut dns_futures1 = Vec::new();
 
-            for c in 0..config.dns_concurrent {
+            for _c in 0..config.dns_concurrent {
                 dns_futures1.push(populate_a_dns(&connection_tracker, &config));
             }
 
@@ -155,52 +121,77 @@ fn main() -> std::io::Result<()> {
                  ips_db.len(), dns_duration.as_secs_f32());
     }
 
+    let transfer_started = Instant::now();
 
-    let ips_db = connection_tracker.ips.lock().unwrap();
-
-    let mut futures = Vec::new();
-
-    {
-        let mut starter: usize = 0;
-
-        let connectors = if config.connections < ips_db.len() { config.connections } else { ips_db.len() };
-
-
-        let connection_chunk = blocks.len() / connectors;
-
-        for (count, (ip, _)) in ips_db.iter().enumerate() {
-            if count >= connectors {
-                break;
-            }
-
-            futures.push(async_execute(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
-
-            starter += connection_chunk;
-        }
-    }
-
-    println!("Using {} connections to S3", futures.len());
-
-    // spawn a task waiting on all the async streams to finish
-    rt.block_on(join_all(futures));
-
-    rt.shutdown_timeout(Duration::from_millis(100));
-
-    /*    sync_execute(&connection_tracker, &blocks, &bucket_host, &bucket_name, &bucket_key, &write_filename, memory_only);
+    if !config.asynchronous {
+        sync_execute(&connection_tracker, &blocks, &config);
 
         let ips = connection_tracker.ips.lock().unwrap();
 
         for ip in ips.iter() {
             println!("Ending with {} used {} times", ip.0, ip.1);
-        } */
+        }
 
-    let total_duration = Instant::now().duration_since(total_started);
+    } else {
+        // a tokio runtime we will use for our async io
+        let mut rt = if config.basic {
+            Builder::new()
+                .enable_all()
+                .basic_scheduler()
+                .build()
+                .unwrap()
+        } else {
+            Builder::new()
+                .enable_all()
+                .threaded_scheduler()
+                .core_threads(1)
+                .max_threads(2)
+                .build()
+                .unwrap()
+        };
+
+        let ips_db = connection_tracker.ips.lock().unwrap();
+
+        let mut futures = Vec::new();
+
+        {
+            let mut starter: usize = 0;
+
+            let connectors = if config.connections < ips_db.len() { config.connections } else { ips_db.len() };
+
+
+            let connection_chunk = blocks.len() / connectors;
+
+            for (count, (ip, _)) in ips_db.iter().enumerate() {
+                if count >= connectors {
+                    break;
+                }
+
+                futures.push(async_execute(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
+
+                starter += connection_chunk;
+            }
+        }
+
+        println!("Using {} connections to S3", futures.len());
+
+        // spawn a task waiting on all the async streams to finish
+        rt.block_on(join_all(futures));
+
+        rt.shutdown_timeout(Duration::from_millis(100));
+    }
+
+    let transfer_duration = Instant::now().duration_since(transfer_started);
 
     println!("{}: rate MiB/sec = {} (copied {} bytes in {}s)",
              "Overall",
-             (total_size_bytes as f32 / (1024.0 * 1024.0)) / total_duration.as_secs_f32(),
+             (total_size_bytes as f32 / (1024.0 * 1024.0)) / transfer_duration.as_secs_f32(),
              total_size_bytes,
-             total_duration.as_secs_f32());
+             transfer_duration.as_secs_f32());
+
+    let total_duration = Instant::now().duration_since(total_started);
+
+    println!("Total exec time was {}s", total_duration.as_secs_f32());
 
     Ok(())
 }
@@ -217,31 +208,6 @@ fn head_size_from_s3(s3_bucket: &str, s3_key: &str, s3_region: &str) -> Result<u
     Ok(size.parse::<u64>().unwrap())
 }
 
-#[cfg(target_os = "linux")]
-fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
-
-    // because we want to let fallocate do its best we want to always work on a new file
-    let file = OpenOptions::new().write(true)
-        .create_new(true)
-        .open(write_filename)?;
-
-    let fd = file.as_raw_fd();
-
-    // for linux we have the added ability to allocate the full size of the file
-    // without any actual zero initialising
-    fallocate(fd, FallocateFlags::empty(), 0, size);
-
-    Ok(file)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
-    let file = OpenOptions::new().write(true)
-        .create(true)
-        .open(write_filename)?;
-
-    Ok(file)
-}
 
 /*
 ssm-user@ip-172-31-8-71:~$ curl -s http://169.254.169.254/latest/dynamic/instance-identity/document
