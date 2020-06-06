@@ -5,6 +5,8 @@ use std::io;
 use nix::fcntl::fallocate;
 #[cfg(target_os = "linux")]
 use nix::fcntl::FallocateFlags;
+#[cfg(target_os = "linux")]
+use std::os::unix::io::AsRawFd;
 
 #[cfg(target_os = "linux")]
 pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
@@ -24,7 +26,7 @@ pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File,
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
+pub fn create_empty_target_file(write_filename: &str, _size: i64) -> Result<File, io::Error> {
     let file = OpenOptions::new().write(true)
         .create(true)
         .open(write_filename)?;

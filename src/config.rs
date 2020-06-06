@@ -26,7 +26,9 @@ pub struct Config {
 
     pub fallocate: bool,
     pub basic: bool,
-    pub asynchronous: bool
+    pub asynchronous: bool,
+
+    pub instance_type: String
 }
 
 const S3_REGION_ARG: &str = "s3-region";
@@ -52,8 +54,7 @@ impl Config {
 
             .arg(Arg::with_name(S3_REGION_ARG)
                 .long(S3_REGION_ARG)
-                .default_value("us-east-1")
-                .about("The S3 region of the input bucket, defaults to attempting to find the current region")
+                .about("The S3 region of the input bucket, defaults to the current region when running in AWS")
                 .takes_value(true))
 
             // control what we do with the file when we get in from S3
@@ -93,8 +94,7 @@ impl Config {
 
             .arg(Arg::with_name("dns-server")
                 .long("dns-server")
-                .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses")
-                .default_value("8.8.8.8:53")
+                .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses, defaults to Google or AWS depending on detected location")
                 .takes_value(true))
             .arg(Arg::with_name("dns-concurrent")
                 .long("dns-concurrent")
@@ -124,18 +124,47 @@ impl Config {
 
             .get_matches();
 
-        let mut dns_server = String::from(matches.value_of("dns-server").unwrap());
+        let mut dns_server: String = String::from("8.8.8.8:53");
+
+        if matches.is_present("dns-server") {
+            dns_server = String::from(matches.value_of("dns-server").unwrap());
+        }
+
+        let mut region: String = String::new();
+
+        let mut aws_instance_type = String::from("not an AWS EC2 instance");
 
         // try to work out if we are running on an EC2 instance or not, and if so change the
-        // defaults
-        // 169.254.169.253:53
+        // defaults - we have a command line switch to disable this detection though
         let not_ec2 = matches.is_present("not-ec2");
 
         if !not_ec2 {
             // we *may* be running on an EC2 instance in which case we have a few tricks up our sleeve
+            let resp =
+                ureq::get("http://169.254.169.254/latest/dynamic/instance-identity/document")
+                    .timeout_connect(500)
+                    .timeout_read(500)
+                    .call();
 
+            if resp.status() == 200 {
+                let json = resp.into_json().unwrap();
 
-            dns_server = String::from("1213:34");
+                aws_instance_type = json["instanceType"].to_string();
+                region = json["region"].to_string();
+
+                // running in AWS means we have a more sensible default DNS server - but we
+                // only want to use if one wasn't explicitly given on the command line
+                if !matches.is_present("dns-server") {
+                    dns_server = String::from("169.254.169.253:53");
+                }
+            }
+        }
+
+        if region.is_empty() {
+            region = String::from(matches.value_of("s3-region").unwrap_or_else(|| {
+                println!("If not running in AWS you need to specify the region of the bucket");
+                std::process::exit(1);
+            }));
         }
 
         let in_key = String::from(matches.value_of("INPUTKEY").unwrap());
@@ -144,7 +173,7 @@ impl Config {
         Config {
             input_bucket_name: String::from(matches.value_of("INPUTBUCKET").unwrap()),
             input_bucket_key: in_key.clone(),
-            input_bucket_region: String::from(matches.value_of("s3-region").unwrap_or("ap-southeast-2")),
+            input_bucket_region: region,
 
             // DNS settings
             dns_server,
@@ -164,6 +193,8 @@ impl Config {
             fallocate: matches.is_present("fallocate"),
             basic: matches.is_present("basic"),
             asynchronous: matches.is_present("async"),
+
+            instance_type: aws_instance_type
         }
     }
 }

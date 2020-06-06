@@ -1,6 +1,8 @@
 extern crate nix;
 extern crate num_cpus;
 extern crate ureq;
+#[macro_use]
+extern crate clap;
 
 use std::convert::TryInto;
 use std::str;
@@ -47,6 +49,10 @@ fn main() -> std::io::Result<()> {
     } else {
         println!("Copying file s3://{}{} (region {}) to {}", config.input_bucket_name, config.input_bucket_key, config.input_bucket_region, config.output_write_filename);
     }
+
+    println!("Running on: {}", config.instance_type);
+    println!("DNS server chosen: {}", config.dns_server);
+    println!("Aiming for {} distinct concurrent connections to S3", config.connections);
 
     let total_size_bytes: u64 = head_size_from_s3(config.input_bucket_name.as_str(), config.input_bucket_key.as_str(), config.input_bucket_region.as_str()).unwrap_or_default();
 
@@ -124,6 +130,8 @@ fn main() -> std::io::Result<()> {
     let transfer_started = Instant::now();
 
     if !config.asynchronous {
+        println!("Starting a threaded synchronous copy");
+
         sync_execute(&connection_tracker, &blocks, &config);
 
         let ips = connection_tracker.ips.lock().unwrap();
@@ -133,6 +141,8 @@ fn main() -> std::io::Result<()> {
         }
 
     } else {
+        println!("Starting a tokio asynchronous copy");
+
         // a tokio runtime we will use for our async io
         let mut rt = if config.basic {
             Builder::new()

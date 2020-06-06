@@ -1,13 +1,12 @@
 extern crate rand;
 extern crate ureq;
 
-use std::{iter, str};
-use std::collections::BTreeMap;
+use std::{iter};
 use std::fs::File;
 use std::io::{BufRead, BufReader as IoBufReader};
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::{Arc};
+use std::time::{Duration};
 
 use futures::join;
 use rand::{Rng, thread_rng};

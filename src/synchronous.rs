@@ -39,14 +39,15 @@ pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<Bl
         .for_each(|p| {
 
             // we have no guarantees that we will have enough S3 IP addresses for our
-            // threads - so we just chose randomly from the pool
-            let mut tcp_addr: IpAddr;
+            // threads - so we just chose the least used so far
+            let tcp_addr: IpAddr;
             let mut stream_id: String;
             {
                 let mut ips = connection_tracker.ips.lock().unwrap();
 
-                let which = rand::thread_rng().gen_range(0, ips.len());
-                let (ip,count) = ips.iter_mut().nth(which).unwrap();
+                let lowest_usage = ips.iter_mut().min_by_key(|x| *x.1);
+
+                let (ip,count) = lowest_usage.unwrap();
 
                 tcp_addr = ip.parse::<IpAddr>().unwrap();
                 stream_id = format!("{}-{}", ip, count);
@@ -120,7 +121,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         }
 
         // stream down into memory
-        let mut copied_bytes: u64;
+        let copied_bytes: u64;
         let mut memory_buffer = Cursor::new(vec![0; read_length as usize]);
 
         copied_bytes = io::copy(&mut reader, &mut memory_buffer).unwrap();
@@ -128,7 +129,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, s3_bucket: 
         // we can either just write into a memory buffer we then throw away
         // or onto a disk.. memory only allows benchmarking of networking without
         // disk io complicating things
-        if (!memory_only) {
+        if !memory_only {
              let oo = OpenOptions::new()
                 .write(true)
                 .create(false)
