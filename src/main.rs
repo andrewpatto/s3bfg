@@ -10,7 +10,9 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
+use futures::prelude::*;
 use futures::future::join_all;
+use futures::stream::FuturesUnordered;
 use humansize::{file_size_opts as options, FileSize};
 use resolve::resolve_host;
 use tokio::runtime::{Builder, Runtime};
@@ -162,7 +164,7 @@ fn main() -> std::io::Result<()> {
 
         let ips_db = connection_tracker.ips.lock().unwrap();
 
-        let mut futures = Vec::new();
+        let mut futures = FuturesUnordered::new();
 
         {
             let mut starter: usize = 0;
@@ -186,7 +188,9 @@ fn main() -> std::io::Result<()> {
         println!("Using {} connections to S3", futures.len());
 
         // spawn a task waiting on all the async streams to finish
-        rt.block_on(join_all(futures));
+        let res = rt.block_on(futures.into_future());
+
+        println!("err: {:?}", res);
 
         rt.shutdown_timeout(Duration::from_millis(100));
     }
