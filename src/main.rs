@@ -213,7 +213,7 @@ fn head_size_from_s3(s3_bucket: &str, s3_key: &str, s3_region: &str) -> Result<u
         //.set("X-My-Header", "Secret")
         .call();
 
-    let size = headresp.header("content-length").unwrap();
+    let size = headresp.header("Content-Length").unwrap();
 
     Ok(size.parse::<u64>().unwrap())
 }
