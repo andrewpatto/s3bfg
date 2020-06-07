@@ -25,7 +25,6 @@ use tokio::io::{
 };
 use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
-use tokio::time::delay_for;
 use tokio_rustls::{rustls::ClientConfig, TlsConnector, webpki::DNSNameRef};
 use tokio_rustls::client::TlsStream;
 
@@ -117,7 +116,7 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
     }
 
     // if we want to allocate single buffers then we need to know the max size we will face
-    let longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
+    let _longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
 
     let s3_ip = (ip, 443)
         .to_socket_addrs()?
@@ -144,11 +143,9 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
 
     let mut buf_reader = BufReader::new(reader);
 
-
-    let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename).await?;
-
-
-    let mut memory_buffer = vec![0u8; longest as usize];
+    // we hope to make this memory buffer only once and then continually read into it
+    // (helps us make the zeroing out of the vector content a one off)
+    let mut memory_buffer = vec![0u8; _longest as usize];
 
     let mut c = 0;
 
@@ -198,9 +195,15 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
         let copied_bytes: u64;
 
         if cfg.memory_only {
+            if b.length != memory_buffer.len() as u64 {
+                memory_buffer.resize(b.length as usize, 0);
+            }
+
             copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;
         }
         else {
+            let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename).await?;
+
             file_writer.seek(SeekFrom::Start(b.start)).await?;
 
             let copied_stats = copy_exact(&mut buf_reader, &mut file_writer, b.length).await?;

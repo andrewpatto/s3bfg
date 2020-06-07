@@ -10,7 +10,6 @@ use std::time::Instant;
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 use humansize::{file_size_opts as options, FileSize};
-use resolve::resolve_host;
 use tokio::runtime::{Builder, Runtime};
 
 use crate::asynchronous::async_execute;
@@ -107,10 +106,8 @@ fn main() -> std::io::Result<()> {
 
             let res = dns_rt.block_on(dns_futures.into_future());
 
-            println!("err: {:?}", res);
-
             if connection_tracker.ips.lock().unwrap().len() < config.s3_connections {
-                println!("Didn't find enough distinct S3 endpoints (currently {}) in round {} so trying again", connection_tracker.ips.lock().unwrap().len(), round+1);
+                println!("Didn't find enough distinct S3 endpoints (currently {}) in round {} so trying again (btw futures result was {:?})", connection_tracker.ips.lock().unwrap().len(), round+1, res);
                 sleep(config.dns_round_delay);
             } else {
                 break;

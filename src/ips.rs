@@ -1,24 +1,20 @@
 extern crate rand;
 
-use std::{iter};
-use std::fs::File;
-use std::io::{BufRead, BufReader as IoBufReader};
-use std::sync::{Arc};
-use std::time::{Duration};
+use std::iter;
+use std::sync::Arc;
+use std::time::Duration;
 
 use rand::{Rng, thread_rng};
 use rand::distributions::Alphanumeric;
-use tokio::net::{lookup_host, TcpStream, UdpSocket};
+use tokio::net::UdpSocket;
 use tokio::prelude::*;
-use tokio::time;
 use trust_dns_client::client::{AsyncClient, ClientHandle};
-use trust_dns_client::op::{DnsResponse};
+use trust_dns_client::op::DnsResponse;
 use trust_dns_client::rr::{DNSClass, Name, RData, Record, RecordType};
-use trust_dns_client::udp::{UdpClientStream};
+use trust_dns_client::udp::UdpClientStream;
 
-use crate::datatype::ConnectionTracker;
 use crate::config::Config;
-
+use crate::datatype::ConnectionTracker;
 
 /// Populates the connection tracker database with random S3 IP addresses
 /// from one attempt to lookup an S3 host.
@@ -28,6 +24,8 @@ use crate::config::Config;
 /// ```
 /// ```
 pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &Config) -> io::Result<()> {
+    /// Create a random bucket name in the S3 domain space - hoping that
+    /// this will maximise our chance of getting new round robin IP addresses for S3 targets
     fn random_s3_fqdn(c: &Config) -> String {
         let mut rng = thread_rng();
 

@@ -15,7 +15,6 @@ native-tls = "*"
 nix = "*"
 rand = "*"
 rayon = "*"
-resolve = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-rustls = "*"
 trust-dns-client = "*"

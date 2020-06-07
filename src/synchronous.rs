@@ -1,33 +1,27 @@
 extern crate ureq;
 
-use std::net::{TcpStream, ToSocketAddrs, IpAddr, SocketAddr};
-use native_tls::TlsConnector;
-use std::{io, thread, env};
-use std::fs::{File, OpenOptions};
-use std::io::prelude::*;
-use std::io::{SeekFrom, BufReader, Cursor, BufWriter};
-use std::time::{Duration, Instant};
-use std::str;
-use std::os::unix::prelude::FileExt;
-use std::os::unix::fs::OpenOptionsExt;
-use nix::fcntl::OFlag;
-use resolve::resolve_host;
-use rayon::prelude::*;
-use std::thread::sleep;
-use std::sync::{Arc, Mutex};
-use std::sync::atomic::Ordering;
-use std::sync::atomic::AtomicUsize;
-use std::borrow::Borrow;
-use clap::{Arg, App};
-use httparse::parse_headers;
-use humansize::{FileSize, file_size_opts as options};
-use crate::datatype::{BlockToStream, ConnectionTracker};
-use std::str::FromStr;
-use std::net::Ipv4Addr;
-use crate::config::Config;
+use std::io;
 use std::error::Error;
+use std::fs::{File, OpenOptions};
+use std::io::{BufReader, BufWriter, Cursor, SeekFrom};
+use std::io::prelude::*;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::Ipv4Addr;
+use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::prelude::FileExt;
+use std::str;
+use std::sync::Arc;
+use std::time::Instant;
 
- // const O_DIRECT: i32 = 0x4000;
+use httparse::parse_headers;
+use native_tls::TlsConnector;
+use rayon::prelude::*;
+
+use crate::config::Config;
+use crate::datatype::{BlockToStream, ConnectionTracker};
+
+// use nix::fcntl::OFlag;
+// const O_DIRECT: i32 = 0x4000;
 
 
 pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {

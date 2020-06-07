@@ -11,9 +11,9 @@ use std::os::unix::io::AsRawFd;
 #[cfg(target_os = "linux")]
 pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
 
-    // because we want to let fallocate do its best we want to always work on a new file
+    // because we want to let fallocate do its best we want to always work on a new file (disabled)
     let file = OpenOptions::new().write(true)
-        .create_new(true)
+        .create(true)
         .open(write_filename)?;
 
     let fd = file.as_raw_fd();
