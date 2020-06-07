@@ -1,8 +1,7 @@
 extern crate ureq;
-extern crate num_cpus;
 
 use std::net::{TcpStream, ToSocketAddrs, IpAddr, SocketAddr};
-
+use native_tls::TlsConnector;
 use std::{io, thread, env};
 use std::fs::{File, OpenOptions};
 use std::io::prelude::*;
@@ -12,7 +11,6 @@ use std::str;
 use std::os::unix::prelude::FileExt;
 use std::os::unix::fs::OpenOptionsExt;
 use nix::fcntl::OFlag;
-use progress_streams::ProgressReader;
 use resolve::resolve_host;
 use rayon::prelude::*;
 use std::thread::sleep;
@@ -23,134 +21,167 @@ use std::borrow::Borrow;
 use clap::{Arg, App};
 use httparse::parse_headers;
 use humansize::{FileSize, file_size_opts as options};
-use std::collections::{HashSet, BTreeMap};
-use rand::Rng;
 use crate::datatype::{BlockToStream, ConnectionTracker};
 use std::str::FromStr;
 use std::net::Ipv4Addr;
 use crate::config::Config;
+use std::error::Error;
 
-const O_DIRECT: i32 = 0x4000;
+ // const O_DIRECT: i32 = 0x4000;
 
 
 pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {
+    println!("Starting a threaded synchronous copy");
 
-    blocks.into_par_iter()
-        .for_each(|p| {
+    let pool = rayon::ThreadPoolBuilder::new().num_threads(config.synchronous_threads).build().unwrap();
 
-            // we have no guarantees that we will have enough S3 IP addresses for our
-            // threads - so we just chose the least used so far
-            let tcp_addr: IpAddr;
-            let mut stream_id: String;
-            {
-                let mut ips = connection_tracker.ips.lock().unwrap();
+    println!("Rayon thread pool is set up to operate with {} executions in parallel, across {} potential S3 endpoints", pool.current_num_threads(), connection_tracker.ips.lock().unwrap().len());
 
-                let lowest_usage = ips.iter_mut().min_by_key(|x| *x.1);
+    pool.install(|| {
+        blocks.into_par_iter()
+            .for_each(|p| {
 
-                let (ip,count) = lowest_usage.unwrap();
+                // we can have occasional (rare) network fails on reads so we just have to retry
+                // and hope it gets better.. so each block will retry 3 times and then fail
+                for _read_attempt in 1..3 {
 
-                tcp_addr = ip.parse::<IpAddr>().unwrap();
-                stream_id = format!("{}-{}", ip, count);
+                    // we have no guarantees that we will have enough S3 IP addresses for our
+                    // threads - so we use a mutex protected set of ips and chose the least used
+                    // one
+                    let tcp_addr: IpAddr;
+                    let stream_id: String;
+                    {
+                        let mut ips = connection_tracker.ips.lock().unwrap();
 
-                *count = *count + 1;
-            }
+                        // our S3 endpoint with the lowest usage so far
+                        let lowest_usage = ips.iter_mut().min_by_key(|x| *x.1);
 
-            // println!("{}: Streaming range at {} for {} bytes", stream_id, p.start, p.length);
+                        let (ip, count) = lowest_usage.unwrap();
 
-            sync_stream_range_from_s3(stream_id.as_str(),
-                                      tcp_addr,
-                                      p.start,
-                                      p.length,
-                                      p.start,
-                                        config);
-        });
+                        tcp_addr = ip.parse::<IpAddr>().unwrap();
+
+                        let current_thread_index = pool.current_thread_index().unwrap_or(999);
+                        let current_count = *count;
+
+                        stream_id = format!("{}-{}-{}", ip, current_count, current_thread_index);
+
+                        *count = *count + 1;
+                    }
+
+                    match sync_stream_range_from_s3(stream_id.as_str(),
+                                                    tcp_addr,
+                                                    p.start,
+                                                    p.length,
+                                                    p.start,
+                                                    config) {
+                        Ok(_) => return,
+                        Err(e) => {
+                            println!("An S3 read attempt to {} failed with message {:?} but we will try again (up to 3 times)", tcp_addr, e);
+                        }
+                    }
+                }
+            });
+    });
+
+
+    let ips = connection_tracker.ips.lock().unwrap();
+
+    for ip in ips.iter() {
+        println!("Ending synchronous transfer with S3 {} used {} times", ip.0, ip.1);
+    }
 }
 
-fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start: u64, read_length: u64, write_location: u64, cfg: &Config) {
+fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start: u64, read_length: u64, write_location: u64, cfg: &Config) -> Result<(), Box<dyn Error>> {
     // these are all our benchmark points - set initially to be the starting time
     let now_started = Instant::now();
-    let mut now_connected = now_started.clone();
-    let mut now_response_body_received = now_started.clone();
+    // let now_connected: Instant;
+    let now_response_body_received : Instant;
 
-    if let Ok(mut tcp_stream) = TcpStream::connect(SocketAddr::new(tcp_host_addr, 80)) {
-        now_connected = Instant::now();
+    let connector = TlsConnector::new().unwrap();
 
-        // disable Nagle as we know we are just sending the whole request in one packet
-        tcp_stream.set_nodelay(true).unwrap();
+    let tcp_stream = TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
 
-        // build into a buffer and send in one go.
-        let mut prelude: Vec<u8> = vec![];
+    // now_connected = Instant::now();
 
-        // request line
-        write!(
-            prelude,
-            "GET {} HTTP/1.1\r\n",
-            cfg.input_bucket_key
-        ).unwrap();
+    // disable Nagle as we know we are just sending the whole request in one packet
+    // tcp_stream.set_nodelay(true).unwrap();
 
-        write!(prelude, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region).unwrap();
-        write!(prelude, "User-Agent: s3bigfile\r\n").unwrap();
-        write!(prelude, "Accept: */*\r\n").unwrap();
-        write!(prelude, "Range: bytes={}-{}\r\n", read_start, read_start + read_length - 1).unwrap();
-        write!(prelude, "Connection: close\r\n").unwrap();
+    let ssl_host = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, cfg.input_bucket_region);
 
-        // finish
-        write!(prelude, "\r\n").unwrap();
+    let mut ssl_stream = connector.connect(ssl_host.as_str(), tcp_stream)?;
 
-        // write all to the wire
-        tcp_stream.write_all(&prelude[..]).unwrap();
+    // build into a buffer and send in one go.
+    let mut prelude: Vec<u8> = vec![];
 
-        //let mut progress_reader = ProgressReader::new(&mut tcp_stream, |progress: usize| {
-        //    total.fetch_add(progress, Ordering::SeqCst);
-        //});
+    // request line
+    write!(
+        prelude,
+        "GET {} HTTP/1.1\r\n",
+        cfg.input_bucket_key
+    )?;
 
-        let mut reader = BufReader::with_capacity(1024 * 1024, tcp_stream);
+    write!(prelude, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region)?;
+    write!(prelude, "User-Agent: s3bigfile\r\n")?;
+    write!(prelude, "Accept: */*\r\n")?;
+    write!(prelude, "Range: bytes={}-{}\r\n", read_start, read_start + read_length - 1)?;
+    write!(prelude, "Connection: close\r\n")?;
 
-        // read HTTP headers until they are done
-        loop {
-            let mut line = String::new();
+    // finish
+    write!(prelude, "\r\n")?;
 
-            let read_status = reader.read_line(&mut line).unwrap();
+    // write all to the wire
+    ssl_stream.write_all(&prelude[..])?;
 
-            if line.eq("\r\n") {
-                break;
-            }
+    //let mut progress_reader = ProgressReader::new(&mut tcp_stream, |progress: usize| {
+    //    total.fetch_add(progress, Ordering::SeqCst);
+    //});
+
+    let mut reader = BufReader::with_capacity(1024 * 1024, ssl_stream);
+
+    // read HTTP headers until they are done
+    loop {
+        let mut line = String::new();
+
+        let _read_status = reader.read_line(&mut line)?;
+
+        if line.eq("\r\n") {
+            break;
         }
+    }
 
-        // stream down into memory
-        let copied_bytes: u64;
-        let mut memory_buffer = Cursor::new(vec![0; read_length as usize]);
+    // we will first stream down into memory from the network stream
+    let mut memory_buffer = Cursor::new(vec![0; read_length as usize]);
 
-        copied_bytes = io::copy(&mut reader, &mut memory_buffer).unwrap();
+    let copied_bytes = io::copy(&mut reader, &mut memory_buffer)?;
 
-        // we can either just write into a memory buffer we then throw away
-        // or onto a disk.. memory only allows benchmarking of networking without
-        // disk io complicating things
-        if !cfg.memory_only {
-             let oo = OpenOptions::new()
-                .write(true)
-                .create(false)
+    // we can either just write into a memory buffer we then throw away
+    // or onto a disk.. memory only allows benchmarking of networking without
+    // disk io complicating things
+    if !cfg.memory_only {
+        let oo = OpenOptions::new()
+            .write(true)
+            .create(false)
 //                 .custom_flags(OFlag::O_DIRECT.bits())
-                 .clone();
+            .clone();
 
 //            println!("{:?}", oo);
 
-            let disk_buffer = oo.open(&cfg.output_write_filename)
-                .unwrap();
+        let disk_buffer = oo.open(&cfg.output_write_filename)?;
 
-            disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location).unwrap();
-        }
-
-        now_response_body_received = Instant::now();
-
-        let copied_duration = now_response_body_received.duration_since(now_started);
-
-        assert_eq!(copied_bytes, read_length);
-
-        println!("{}: rate MiB/sec = {} (copied {} bytes in {}s)",
-                 stream_id,
-                 (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
-                 copied_bytes,
-                 copied_duration.as_secs_f32())
+        disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location)?;
     }
+
+    now_response_body_received = Instant::now();
+
+    let copied_duration = now_response_body_received.duration_since(now_started);
+
+    assert_eq!(copied_bytes, read_length);
+
+    println!("{}: rate MiB/sec = {} (copied {} bytes in {}s)",
+             stream_id,
+             (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
+             copied_bytes,
+             copied_duration.as_secs_f32());
+
+    Ok(())
 }

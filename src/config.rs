@@ -18,24 +18,33 @@ pub struct Config {
     pub memory_only: bool,
     pub output_write_filename: String,
 
-    pub connections: usize,
+    pub s3_connections: usize,
 
-    pub threads: usize,
+    // settings for the synchronous Rayon thread pool
+    pub synchronous_threads: usize,
+
+    // settings for the asynchronous tokio runtime
+    pub asynchronous_core_threads: usize,
+    pub asynchronous_max_threads: usize,
+    pub asynchronous_basic: bool,
+
     pub segment_size_mibs: u64,
     pub segment_size_bytes: u64,
 
     pub fallocate: bool,
-    pub basic: bool,
     pub asynchronous: bool,
 
-    pub instance_type: String
+    pub instance_type: String,
 }
 
 const S3_REGION_ARG: &str = "s3-region";
+const SYNC_THREADS_ARG: &str = "sync-threads";
+const ASYNC_CORE_THREADS_ARG: &str = "async-core-threads";
+const ASYNC_MAX_THREADS_ARG: &str = "async-max-threads";
+const ASYNC_USE_BASIC_ARG: &str = "async-use-basic";
 
 impl Config {
     pub fn new() -> Config {
-        let num_cpus = num_cpus::get();
 
         let matches = App::new("s3bigfile")
             .version("1.0")
@@ -86,11 +95,20 @@ impl Config {
                 .default_value("10")
                 .takes_value(true))
 
-            .arg(Arg::with_name("threads")
-                .long("threads")
-                .about("Sets the number of threads to use to execute the streaming gets, default is detected core count")
-                .default_value(num_cpus.to_string().as_str())
+            .arg(Arg::with_name(SYNC_THREADS_ARG)
+                .long(SYNC_THREADS_ARG)
+                .about("Sets the number of threads in the Rayon thread pool for synchronous gets, default is 0 to tell Rayon to detect core count")
                 .takes_value(true))
+
+            .arg(Arg::with_name(ASYNC_CORE_THREADS_ARG)
+                .long(ASYNC_CORE_THREADS_ARG)
+                .about("Sets the number of core threads in the Tokio runtime, default is for Tokio to detect core count")
+                .takes_value(true))
+            .arg(Arg::with_name(ASYNC_MAX_THREADS_ARG)
+                .long(ASYNC_MAX_THREADS_ARG)
+                .about("Sets the number of max threads in the Tokio runtime, default is 512")
+                .takes_value(true))
+
 
             .arg(Arg::with_name("dns-server")
                 .long("dns-server")
@@ -170,6 +188,8 @@ impl Config {
         let in_key = String::from(matches.value_of("INPUTKEY").unwrap());
         let out_current_dir = Path::new(&in_key).file_name().unwrap().to_str().unwrap();
 
+
+
         Config {
             input_bucket_name: String::from(matches.value_of("INPUTBUCKET").unwrap()),
             input_bucket_key: in_key.clone(),
@@ -184,17 +204,21 @@ impl Config {
             output_write_filename: String::from(matches.value_of("output-file").unwrap_or(out_current_dir)),
             memory_only: matches.is_present("memory"),
 
-            connections: matches.value_of_t::<usize>("connections").unwrap(),
+            s3_connections: matches.value_of_t::<usize>("connections").unwrap(),
 
-            threads:  matches.value_of_t::<usize>("threads").unwrap_or(num_cpus),
+            synchronous_threads: matches.value_of_t::<usize>(SYNC_THREADS_ARG).unwrap_or(0),
+
+            asynchronous_basic: matches.is_present(ASYNC_USE_BASIC_ARG),
+            asynchronous_core_threads: matches.value_of_t::<usize>(ASYNC_CORE_THREADS_ARG).unwrap_or(0),
+            asynchronous_max_threads: matches.value_of_t::<usize>(ASYNC_MAX_THREADS_ARG).unwrap_or(0),
+
             segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap_or(8),
             segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8) * 1024 * 1024,
 
             fallocate: matches.is_present("fallocate"),
-            basic: matches.is_present("basic"),
             asynchronous: matches.is_present("async"),
 
-            instance_type: aws_instance_type
+            instance_type: aws_instance_type,
         }
     }
 }

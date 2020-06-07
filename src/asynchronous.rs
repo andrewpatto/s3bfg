@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::io;
+use std::io::Write;
 use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
 use std::path::PathBuf;
@@ -7,34 +8,108 @@ use std::str;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use futures::io::{Cursor, SeekFrom};
+use futures::prelude::*;
+use futures::stream::FuturesUnordered;
+use tokio::fs::OpenOptions;
 use tokio::io::{
+    AsyncBufRead,
+    AsyncBufReadExt,
     AsyncRead,
     AsyncReadExt,
     AsyncWrite,
     AsyncWriteExt,
     BufReader,
     BufWriter,
-    AsyncBufRead,
-    AsyncBufReadExt,
     copy, split
 };
-use std::io::Write;
-use tokio::net::{lookup_host, TcpStream};
-use tokio::runtime;
-use tokio::stream::Stream;
-use tokio::time::{delay_for};
+use tokio::net::TcpStream;
+use tokio::runtime::{Builder, Runtime};
+use tokio::time::delay_for;
 use tokio_rustls::{rustls::ClientConfig, TlsConnector, webpki::DNSNameRef};
 use tokio_rustls::client::TlsStream;
-use tokio::fs::OpenOptions;
 
-
-use crate::datatype::BlockToStream;
-use futures::io::{Cursor, SeekFrom};
-use crate::copy_exact::copy_exact;
 use crate::config::Config;
+use crate::copy_exact::copy_exact;
+use crate::datatype::{BlockToStream, ConnectionTracker};
 
+pub fn async_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {
+    println!("Starting a tokio asynchronous copy");
 
-pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+    // a tokio runtime we will use for our async io
+    // if we are being asked to work in async mode then construct a Tokio runtime
+    // builder using any command line args set
+    let mut rt: Runtime;
+    let mut rt_description: String = String::new();
+
+    if config.asynchronous_basic {
+        rt = Builder::new()
+            .enable_all()
+            .basic_scheduler()
+            .build()
+            .unwrap();
+        rt_description.push_str("basic");
+    } else {
+        let mut temp = Builder::new();
+
+        temp.enable_all();
+        temp.threaded_scheduler();
+
+        rt_description.push_str("threaded ");
+
+        if config.asynchronous_core_threads > 0 {
+            temp.core_threads(config.asynchronous_core_threads);
+            rt_description.push_str(config.asynchronous_core_threads.to_string().as_str());
+            rt_description.push_str("(core)/");
+        } else {
+            rt_description.push_str("default(core)/");
+        }
+        if config.asynchronous_max_threads > 0 {
+            temp.max_threads(config.asynchronous_max_threads);
+            rt_description.push_str(config.asynchronous_max_threads.to_string().as_str());
+            rt_description.push_str("(max)");
+        } else {
+            rt_description.push_str("512(max)");
+        }
+
+        rt =  temp.build().unwrap();
+    }
+
+    let ips_db = connection_tracker.ips.lock().unwrap();
+
+    let futures = FuturesUnordered::new();
+
+    {
+        let mut starter: usize = 0;
+
+        let connectors = if config.s3_connections < ips_db.len() { config.s3_connections } else { ips_db.len() };
+
+        let connection_chunk = blocks.len() / connectors;
+
+        for (count, (ip, _)) in ips_db.iter().enumerate() {
+            if count >= connectors {
+                break;
+            }
+
+            futures.push(async_execute_work(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
+
+            starter += connection_chunk;
+        }
+    }
+
+    println!("Tokio runtime is set up to operate with {} config, across {} potential S3 endpoints", rt_description, futures.len());
+
+    println!("Using {} connections to S3", futures.len());
+
+    // spawn a task waiting on all the async streams to finish
+    let res = rt.block_on(futures.into_future());
+
+    println!("err: {:?}", res);
+
+    rt.shutdown_timeout(Duration::from_millis(100));
+}
+
+pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
 
     // because our start up is expensive we don't even want to go there will be nothing to do
     if blocks.is_empty() {
@@ -63,9 +138,9 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
     let domain = DNSNameRef::try_from_ascii_str(domain_str.as_str())?;
 //        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))?;
 
-    let mut stream = connector.connect(domain, tcp_stream).await?;
+    let stream: TlsStream<TcpStream> = connector.connect(domain, tcp_stream).await?;
 
-    let (mut reader, mut writer) = split(stream);
+    let (reader, mut writer) = split(stream);
 
     let mut buf_reader = BufReader::new(reader);
 
@@ -120,7 +195,7 @@ pub async fn async_execute(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> 
             }
         }
 
-        let mut copied_bytes: u64;
+        let copied_bytes: u64;
 
         if cfg.memory_only {
             copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;

@@ -1,17 +1,13 @@
 extern crate nix;
-extern crate num_cpus;
 extern crate ureq;
-#[macro_use]
-extern crate clap;
 
 use std::convert::TryInto;
 use std::str;
 use std::sync::Arc;
 use std::thread::sleep;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use futures::prelude::*;
-use futures::future::join_all;
 use futures::stream::FuturesUnordered;
 use humansize::{file_size_opts as options, FileSize};
 use resolve::resolve_host;
@@ -54,7 +50,7 @@ fn main() -> std::io::Result<()> {
 
     println!("Running on: {}", config.instance_type);
     println!("DNS server chosen: {}", config.dns_server);
-    println!("Aiming for {} distinct concurrent connections to S3", config.connections);
+    println!("Aiming for {} distinct concurrent connections to S3", config.s3_connections);
 
     let total_size_bytes: u64 = head_size_from_s3(config.input_bucket_name.as_str(), config.input_bucket_key.as_str(), config.input_bucket_region.as_str()).unwrap_or_default();
 
@@ -88,8 +84,6 @@ fn main() -> std::io::Result<()> {
     }
 
 
-    //println!("Thread pool is set up to operate with {} executions in parallel",threads);
-
 
     let total_started = Instant::now();
 
@@ -105,16 +99,18 @@ fn main() -> std::io::Result<()> {
             .unwrap();
 
         for round in 0..config.dns_rounds {
-            let mut dns_futures1 = Vec::new();
+            let dns_futures = FuturesUnordered::new();
 
             for _c in 0..config.dns_concurrent {
-                dns_futures1.push(populate_a_dns(&connection_tracker, &config));
+                dns_futures.push(populate_a_dns(&connection_tracker, &config));
             }
 
-            dns_rt.block_on(join_all(dns_futures1));
+            let res = dns_rt.block_on(dns_futures.into_future());
 
-            if connection_tracker.ips.lock().unwrap().len() < config.connections {
-                println!("Didn't find enough distinct S3 endpoints in round {} so trying again", round+1);
+            println!("err: {:?}", res);
+
+            if connection_tracker.ips.lock().unwrap().len() < config.s3_connections {
+                println!("Didn't find enough distinct S3 endpoints (currently {}) in round {} so trying again", connection_tracker.ips.lock().unwrap().len(), round+1);
                 sleep(config.dns_round_delay);
             } else {
                 break;
@@ -132,67 +128,11 @@ fn main() -> std::io::Result<()> {
     let transfer_started = Instant::now();
 
     if !config.asynchronous {
-        println!("Starting a threaded synchronous copy");
-
         sync_execute(&connection_tracker, &blocks, &config);
 
-        let ips = connection_tracker.ips.lock().unwrap();
-
-        for ip in ips.iter() {
-            println!("Ending with {} used {} times", ip.0, ip.1);
-        }
-
     } else {
-        println!("Starting a tokio asynchronous copy");
+        async_execute(&connection_tracker, &blocks, &config);
 
-        // a tokio runtime we will use for our async io
-        let mut rt = if config.basic {
-            Builder::new()
-                .enable_all()
-                .basic_scheduler()
-                .build()
-                .unwrap()
-        } else {
-            Builder::new()
-                .enable_all()
-                .threaded_scheduler()
-                .core_threads(1)
-                .max_threads(2)
-                .build()
-                .unwrap()
-        };
-
-        let ips_db = connection_tracker.ips.lock().unwrap();
-
-        let mut futures = FuturesUnordered::new();
-
-        {
-            let mut starter: usize = 0;
-
-            let connectors = if config.connections < ips_db.len() { config.connections } else { ips_db.len() };
-
-
-            let connection_chunk = blocks.len() / connectors;
-
-            for (count, (ip, _)) in ips_db.iter().enumerate() {
-                if count >= connectors {
-                    break;
-                }
-
-                futures.push(async_execute(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
-
-                starter += connection_chunk;
-            }
-        }
-
-        println!("Using {} connections to S3", futures.len());
-
-        // spawn a task waiting on all the async streams to finish
-        let res = rt.block_on(futures.into_future());
-
-        println!("err: {:?}", res);
-
-        rt.shutdown_timeout(Duration::from_millis(100));
     }
 
     let transfer_duration = Instant::now().duration_since(transfer_started);

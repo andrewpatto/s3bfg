@@ -1,27 +1,20 @@
 extern crate rand;
-extern crate ureq;
 
 use std::{iter};
 use std::fs::File;
 use std::io::{BufRead, BufReader as IoBufReader};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc};
 use std::time::{Duration};
 
-use futures::join;
 use rand::{Rng, thread_rng};
 use rand::distributions::Alphanumeric;
-use tokio::io::AsyncBufReadExt;
-use tokio::io::AsyncWriteExt;
-use tokio::io::BufReader as TokioBufReader;
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::prelude::*;
 use tokio::time;
-use trust_dns_client::client::{AsyncClient, Client, ClientHandle, SyncClient};
-use trust_dns_client::op::{DnsResponse, ResponseCode};
+use trust_dns_client::client::{AsyncClient, ClientHandle};
+use trust_dns_client::op::{DnsResponse};
 use trust_dns_client::rr::{DNSClass, Name, RData, Record, RecordType};
-use trust_dns_client::rr::rdata::key::KEY;
-use trust_dns_client::udp::{UdpClientConnection, UdpClientStream};
+use trust_dns_client::udp::{UdpClientStream};
 
 use crate::datatype::ConnectionTracker;
 use crate::config::Config;
@@ -53,8 +46,6 @@ pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &C
     let stream = UdpClientStream::<UdpSocket>::with_timeout(socket_addr, Duration::from_millis(50));
 
     let mut client = AsyncClient::connect(stream).await.unwrap();
-
-    //let mut runtime = Runtime::new().unwrap();
 
     tokio::spawn(client.1);
 

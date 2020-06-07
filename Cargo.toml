@@ -1,26 +1,25 @@
 [package]
 name = "s3bfg"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["Andrew Patterson <andrew@patto.net>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ureq = { version = "*", features = ["json"] }
+clap = "3.0.0-beta.1"
+httparse = "*"
+humansize = "*"
+futures = "*"
+native-tls = "*"
+nix = "*"
+rand = "*"
 rayon = "*"
 resolve = "*"
-httparse = "*"
-progress-streams = "*"
-clap = "3.0.0-beta.1"
-humansize = "*"
-num_cpus = "*"
-rand = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-rustls = "*"
-futures = "*"
 trust-dns-client = "*"
-nix = "*"
+ureq = { version = "*", features = ["json"] }
 webpki = "*"
 webpki-roots = "*"
 
