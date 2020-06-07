@@ -6,7 +6,7 @@ use std::str;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Instant;
-
+use futures::future::join_all;
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 use humansize::{file_size_opts as options, FileSize};
@@ -98,13 +98,13 @@ fn main() -> std::io::Result<()> {
             .unwrap();
 
         for round in 0..config.dns_rounds {
-            let dns_futures = FuturesUnordered::new();
+            let mut dns_futures = Vec::new();
 
             for _c in 0..config.dns_concurrent {
                 dns_futures.push(populate_a_dns(&connection_tracker, &config));
             }
 
-            let res = dns_rt.block_on(dns_futures.into_future());
+            let res = dns_rt.block_on(join_all(dns_futures));
 
             if connection_tracker.ips.lock().unwrap().len() < config.s3_connections {
                 println!("Didn't find enough distinct S3 endpoints (currently {}) in round {} so trying again (btw futures result was {:?})", connection_tracker.ips.lock().unwrap().len(), round+1, res);
