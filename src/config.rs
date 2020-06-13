@@ -1,13 +1,22 @@
-use clap::{self, Arg, App};
+use clap::{self, Arg, App, ArgMatches};
 use std::path::Path;
 use std::time::Duration;
+use regex::Regex;
+use std::fs::metadata;
 
 /// Stores information entered by the user and derived from the environment
 /// for this particular run of the tool.
 ///
 pub struct Config {
+    // mandatory
     pub input_bucket_name: String,
     pub input_bucket_key: String,
+
+    pub output_write_filename: Option<String>,
+    pub memory_only: bool,
+
+    pub aws_profile: Option<String>,
+
     pub input_bucket_region: String,
 
     pub dns_server: String,
@@ -15,8 +24,6 @@ pub struct Config {
     pub dns_rounds: usize,
     pub dns_round_delay: Duration,
 
-    pub memory_only: bool,
-    pub output_write_filename: String,
 
     pub s3_connections: usize,
 
@@ -46,24 +53,30 @@ const ASYNC_USE_BASIC_ARG: &str = "async-use-basic";
 impl Config {
     pub fn new() -> Config {
 
-        let matches = App::new("s3bigfile")
+        let matches = App::new("s3bfg")
             .version("1.0")
             .author("AP")
-            .about("Copies S3 files real quick")
+            .about("The big gun of S3 file copying")
 
-            // the only mandatory elements are the bucket and file path within
-            .arg(Arg::with_name("INPUTBUCKET")
-                .about("The S3 bucket name of the input file")
+            // the only mandatory elements are the in/out
+            .arg(Arg::with_name("in")
+                .about("The input path (s3 uri, s3 https)")
                 .required(true)
                 .index(1))
-            .arg(Arg::with_name("INPUTKEY")
-                .about("The S3 key of the input file")
+
+            .arg(Arg::with_name("out")
+                .about("The output path (local file, /dev/null)")
                 .required(true)
                 .index(2))
 
             .arg(Arg::with_name(S3_REGION_ARG)
                 .long(S3_REGION_ARG)
                 .about("The S3 region of the input bucket, defaults to the current region when running in AWS")
+                .takes_value(true))
+
+            .arg(Arg::with_name("profile")
+                .long("profile")
+                .about("The AWS profile to assume, else use default credentials from the environment")
                 .takes_value(true))
 
             // control what we do with the file when we get in from S3
@@ -185,15 +198,17 @@ impl Config {
             }));
         }
 
-        let in_key = String::from(matches.value_of("INPUTKEY").unwrap());
-        let out_current_dir = Path::new(&in_key).file_name().unwrap().to_str().unwrap();
-
-
+        let (in_bucket_name, in_key, out_filename, memory_only) = parse_in_out(&matches);
 
         Config {
-            input_bucket_name: String::from(matches.value_of("INPUTBUCKET").unwrap()),
-            input_bucket_key: in_key.clone(),
+            input_bucket_name: in_bucket_name.to_string(),
+            input_bucket_key: in_key.to_string(),
+            output_write_filename: out_filename,
+
+
+
             input_bucket_region: region,
+            aws_profile: if matches.is_present("profile") { Some(String::from(matches.value_of("profile").unwrap())) } else { None } ,
 
             // DNS settings
             dns_server,
@@ -201,8 +216,7 @@ impl Config {
             dns_rounds: matches.value_of_t::<usize>("dns-rounds").unwrap(),
             dns_round_delay: Duration::from_millis(matches.value_of_t::<u64>("dns-round-delay").unwrap()),
 
-            output_write_filename: String::from(matches.value_of("output-file").unwrap_or(out_current_dir)),
-            memory_only: matches.is_present("memory"),
+            memory_only: memory_only,
 
             s3_connections: matches.value_of_t::<usize>("connections").unwrap(),
 
@@ -221,4 +235,90 @@ impl Config {
             instance_type: aws_instance_type,
         }
     }
+
+
 }
+
+fn matches_s3_uri(arg: &str) -> Option<(String, String)> {
+    /// Rules for Bucket Naming
+    // The following rules apply for naming S3 buckets:
+    // Bucket names must be between 3 and 63 characters long.
+    // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
+    // Bucket names must begin and end with a letter or number.
+    // Bucket names must not be formatted as an IP address (for example, 192.168.5.4).
+    // Bucket names can't begin with xn-- (for buckets created after February 2020).
+    // Bucket names must be unique within a partition. A partition is a grouping of Regions. AWS currently has three partitions: aws (Standard Regions), aws-cn (China Regions), and aws-us-gov (AWS GovCloud [US] Regions).
+    // Buckets used with Amazon S3 Transfer Acceleration can't have dots (.) in their names. For more information about transfer acceleration, see Amazon S3 Transfer Acceleration.
+    // For best compatibility, we recommend that you avoid using dots (.) in bucket names, except for buckets that are used only for static website hosting. If you include dots in a bucket's name, you can't use virtual-host-style addressing over HTTPS, unless you perform your own certificate validation. This is because the security certificates used for virtual hosting of buckets don't work for buckets with dots in their names.
+    // This limitation doesn't affect buckets used for static website hosting, because static website hosting is only available over HTTP. For more information about virtual-host-style addressing, see Virtual Hosting of Buckets. For more information about static website hosting, see Hosting a static website on Amazon S3.
+
+    let re = Regex::new(r##"s3://(?P<bucket>[A-za-z0-9-]{3,63})/(?P<key>[A-Za-z0-9-/\\.]+)"##).unwrap();
+
+    let caps_result = re.captures(arg);
+
+    return if caps_result.is_some() {
+        let caps = caps_result.unwrap();
+
+        Some((String::from(caps.name("bucket").unwrap().as_str()),
+              String::from(caps.name("key").unwrap().as_str())))
+    } else {
+        None
+    }
+}
+
+fn matches_dev_null(arg: &str) -> bool {
+    let re = Regex::new(r##"/dev/null"##).unwrap();
+
+    return re.is_match(arg);
+}
+
+fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) {
+
+    // if we notice we are asked to send to /dev/null we use that to put us in 'special'
+    // memory only mode which skips the entire output IO (useful for network benchmarking)
+    let mut memory_only = false;
+
+    let i = String::from(matches.value_of("in").unwrap());
+    let o = Path::new(matches.value_of("out").unwrap());
+
+    let s3 = matches_s3_uri(i.as_str()).unwrap_or_else(|| {
+        println!("Input must be an S3 path in the form s3://<bucket>/<key>");
+        std::process::exit(1);
+    });
+
+    if o.is_absolute() && o.ends_with("null") {
+        memory_only = true;
+    }
+
+    // the 'base' of the key is possibly going to be useful for us as a filename
+    let key_as_filename = String::from(Path::new(s3.1.as_str()).file_name().unwrap().to_str().unwrap());
+
+    // determine a suitable local path from the info we have
+    let mut local: String;
+
+    // if the local file specified exists then we work out if it is a directory first
+    let md_result = metadata(o);
+
+    if md_result.is_ok() {
+        if md_result.unwrap().is_dir() {
+            local = o.join(key_as_filename).to_str().unwrap().parse().unwrap();
+        } else {
+            local = String::from(o.to_str().unwrap());
+        }
+    } else {
+        local = String::from(o.to_str().unwrap());
+    }
+
+    println!("{}", local);
+
+    return (String::from(s3.0),
+            String::from(s3.1.as_str()),
+            Option::from(String::from(local)),
+            memory_only);
+}
+
+/*
+REGEXP = r'https://.+&bucket=(?P<bucket>.*)&prefix=(?P<prefix>.*)'
+S3URI_FORMAT = 's3://{bucket}/{prefix}'
+
+ */

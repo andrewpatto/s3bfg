@@ -7,10 +7,8 @@ use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Instant;
 use futures::future::join_all;
-use futures::prelude::*;
-use futures::stream::FuturesUnordered;
 use humansize::{file_size_opts as options, FileSize};
-use tokio::runtime::{Builder, Runtime};
+use tokio::runtime::{Builder};
 
 use crate::asynchronous::async_execute;
 use crate::config::Config;
@@ -18,6 +16,7 @@ use crate::datatype::{BlockToStream, ConnectionTracker};
 use crate::empty_file::create_empty_target_file;
 use crate::ips::populate_a_dns;
 use crate::synchronous::sync_execute;
+use crate::s3_size::find_file_size_and_correct_region;
 
 mod datatype;
 mod asynchronous;
@@ -26,6 +25,7 @@ mod ips;
 mod copy_exact;
 mod config;
 mod empty_file;
+mod s3_size;
 
 //  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080
 // m5d.8xlarge Overall: rate MiB/sec = 1131.3945 (copied 29400082342 bytes in 24.781897s)
@@ -42,19 +42,33 @@ fn main() -> std::io::Result<()> {
     let config = Config::new();
 
     if config.memory_only {
-        println!("Copying file s3://{}{} (region {}) to memory", config.input_bucket_name, config.input_bucket_key, config.input_bucket_region);
+        println!("Copying file s3://{}/{} to memory", config.input_bucket_name, config.input_bucket_key);
     } else {
-        println!("Copying file s3://{}{} (region {}) to {}", config.input_bucket_name, config.input_bucket_key, config.input_bucket_region, config.output_write_filename);
+        println!("Copying file s3://{}/{} to {}", config.input_bucket_name, config.input_bucket_key, config.output_write_filename.as_ref().unwrap());
     }
 
     println!("Running on: {}", config.instance_type);
     println!("DNS server chosen: {}", config.dns_server);
     println!("Aiming for {} distinct concurrent connections to S3", config.s3_connections);
 
+    {
+        let mut head_rt = Builder::new()
+            .enable_all()
+            .threaded_scheduler()
+            .build()
+            .unwrap();
+
+        let size = head_rt.block_on(find_file_size_and_correct_region(&config));
+
+        println!("{:?}", size);
+    }
+
+    return Ok(());
+
     let total_size_bytes: u64 = head_size_from_s3(config.input_bucket_name.as_str(), config.input_bucket_key.as_str(), config.input_bucket_region.as_str()).unwrap_or_default();
 
     if !config.memory_only {
-        create_empty_target_file(config.output_write_filename.as_str(), total_size_bytes.try_into().unwrap())?;
+        create_empty_target_file(config.output_write_filename.unwrap().as_str(), total_size_bytes.try_into().unwrap())?;
     }
 
     let mut blocks = vec![];
@@ -99,6 +113,7 @@ fn main() -> std::io::Result<()> {
 
         for round in 0..config.dns_rounds {
             let mut dns_futures = Vec::new();
+
 
             for _c in 0..config.dns_concurrent {
                 dns_futures.push(populate_a_dns(&connection_tracker, &config));

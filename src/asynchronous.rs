@@ -1,27 +1,20 @@
-use std::collections::BTreeMap;
 use std::io;
 use std::io::Write;
-use std::net::SocketAddr;
 use std::net::ToSocketAddrs;
-use std::path::PathBuf;
 use std::str;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc};
 use std::time::{Duration, Instant};
 
-use futures::io::{Cursor, SeekFrom};
+use futures::io::{SeekFrom};
 use futures::prelude::*;
 use futures::stream::FuturesUnordered;
 use tokio::fs::OpenOptions;
 use tokio::io::{
-    AsyncBufRead,
     AsyncBufReadExt,
-    AsyncRead,
     AsyncReadExt,
-    AsyncWrite,
     AsyncWriteExt,
     BufReader,
-    BufWriter,
-    copy, split
+    split
 };
 use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
@@ -202,7 +195,7 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
             copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;
         }
         else {
-            let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename).await?;
+            let mut file_writer = OpenOptions::new().write(true).create(false).open(&cfg.output_write_filename.as_ref().unwrap()).await?;
 
             file_writer.seek(SeekFrom::Start(b.start)).await?;
 

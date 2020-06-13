@@ -2,18 +2,15 @@ extern crate ureq;
 
 use std::io;
 use std::error::Error;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, BufWriter, Cursor, SeekFrom};
+use std::fs::{OpenOptions};
+use std::io::{BufReader, Cursor};
 use std::io::prelude::*;
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
-use std::net::Ipv4Addr;
-use std::os::unix::fs::OpenOptionsExt;
+use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::os::unix::prelude::FileExt;
 use std::str;
 use std::sync::Arc;
 use std::time::Instant;
 
-use httparse::parse_headers;
 use native_tls::TlsConnector;
 use rayon::prelude::*;
 
@@ -160,7 +157,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start:
 
 //            println!("{:?}", oo);
 
-        let disk_buffer = oo.open(&cfg.output_write_filename)?;
+        let disk_buffer = oo.open(&cfg.output_write_filename.as_ref().unwrap())?;
 
         disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location)?;
     }
