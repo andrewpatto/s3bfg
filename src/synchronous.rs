@@ -1,5 +1,3 @@
-extern crate ureq;
-
 use std::io;
 use std::error::Error;
 use std::fs::{OpenOptions};
@@ -16,12 +14,13 @@ use rayon::prelude::*;
 
 use crate::config::Config;
 use crate::datatype::{BlockToStream, ConnectionTracker};
+use std::str::from_utf8;
 
 // use nix::fcntl::OFlag;
 // const O_DIRECT: i32 = 0x4000;
 
 
-pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {
+pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config, bucket_region: &str) {
     println!("Starting a threaded synchronous copy");
 
     let pool = rayon::ThreadPoolBuilder::new().num_threads(config.synchronous_threads).build().unwrap();
@@ -64,7 +63,7 @@ pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<Bl
                                                     p.start,
                                                     p.length,
                                                     p.start,
-                                                    config) {
+                                                    config, bucket_region) {
                         Ok(_) => return,
                         Err(e) => {
                             println!("An S3 read attempt to {} failed with message {:?} but we will try again (up to 3 times)", tcp_addr, e);
@@ -82,7 +81,7 @@ pub fn sync_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<Bl
     }
 }
 
-fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start: u64, read_length: u64, write_location: u64, cfg: &Config) -> Result<(), Box<dyn Error>> {
+fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start: u64, read_length: u64, write_location: u64, cfg: &Config, bucket_region: &str) -> Result<(), Box<dyn Error>> {
     // these are all our benchmark points - set initially to be the starting time
     let now_started = Instant::now();
     // let now_connected: Instant;
@@ -97,7 +96,7 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start:
     // disable Nagle as we know we are just sending the whole request in one packet
     // tcp_stream.set_nodelay(true).unwrap();
 
-    let ssl_host = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, cfg.input_bucket_region);
+    let ssl_host = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, bucket_region);
 
     let mut ssl_stream = connector.connect(ssl_host.as_str(), tcp_stream)?;
 
@@ -107,11 +106,11 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start:
     // request line
     write!(
         prelude,
-        "GET {} HTTP/1.1\r\n",
+        "GET /{} HTTP/1.1\r\n",
         cfg.input_bucket_key
     )?;
 
-    write!(prelude, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region)?;
+    write!(prelude, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, bucket_region)?;
     write!(prelude, "User-Agent: s3bigfile\r\n")?;
     write!(prelude, "Accept: */*\r\n")?;
     write!(prelude, "Range: bytes={}-{}\r\n", read_start, read_start + read_length - 1)?;
@@ -119,6 +118,9 @@ fn sync_stream_range_from_s3(stream_id: &str, tcp_host_addr: IpAddr, read_start:
 
     // finish
     write!(prelude, "\r\n")?;
+
+    // if debugging
+    // println!("{}", from_utf8(&prelude).unwrap());
 
     // write all to the wire
     ssl_stream.write_all(&prelude[..])?;

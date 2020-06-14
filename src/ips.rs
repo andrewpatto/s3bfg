@@ -23,10 +23,10 @@ use crate::datatype::ConnectionTracker;
 ///
 /// ```
 /// ```
-pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &Config) -> io::Result<()> {
+pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &Config, bucket_region: &str) -> io::Result<()> {
     /// Create a random bucket name in the S3 domain space - hoping that
     /// this will maximise our chance of getting new round robin IP addresses for S3 targets
-    fn random_s3_fqdn(c: &Config) -> String {
+    fn random_s3_fqdn(c: &Config, br: &str) -> String {
         let mut rng = thread_rng();
 
         // using a random bucket name increases our chances of avoiding DNS caches along the way
@@ -36,7 +36,7 @@ pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &C
             .take(7)
             .collect();
 
-        return format!("{}.s3-{}.amazonaws.com.", chars, c.input_bucket_region);
+        return format!("{}.s3-{}.amazonaws.com.", chars, br);
     }
 
     let socket_addr = cfg.dns_server.parse().unwrap();
@@ -47,7 +47,7 @@ pub async fn populate_a_dns(connection_tracker: &Arc<ConnectionTracker>, cfg: &C
 
     tokio::spawn(client.1);
 
-    let name = Name::from_ascii(random_s3_fqdn(cfg)).unwrap();
+    let name = Name::from_ascii(random_s3_fqdn(cfg, bucket_region)).unwrap();
 
     // Send the query and get a message response, see RecordType for all supported options
     let query = client.0.query(name, DNSClass::IN, RecordType::A).await;

@@ -25,7 +25,7 @@ use crate::config::Config;
 use crate::copy_exact::copy_exact;
 use crate::datatype::{BlockToStream, ConnectionTracker};
 
-pub fn async_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config) {
+pub fn async_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<BlockToStream>, config: &Config, bucket_region: &str) {
     println!("Starting a tokio asynchronous copy");
 
     // a tokio runtime we will use for our async io
@@ -83,7 +83,7 @@ pub fn async_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<B
                 break;
             }
 
-            futures.push(async_execute_work(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config));
+            futures.push(async_execute_work(&ip.as_str(), &blocks[starter..starter + connection_chunk], &config, bucket_region));
 
             starter += connection_chunk;
         }
@@ -101,7 +101,7 @@ pub fn async_execute(connection_tracker: &Arc<ConnectionTracker>, blocks: &Vec<B
     rt.shutdown_timeout(Duration::from_millis(100));
 }
 
-pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config, bucket_region: &str) -> Result<(), Box<dyn std::error::Error>> {
 
     // because our start up is expensive we don't even want to go there will be nothing to do
     if blocks.is_empty() {
@@ -125,7 +125,7 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
     tls_config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
     let connector = TlsConnector::from(Arc::new(tls_config));
 
-    let domain_str = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, cfg.input_bucket_region);
+    let domain_str = format!("{}.s3-{}.amazonaws.com", cfg.input_bucket_name, bucket_region);
 
     let domain = DNSNameRef::try_from_ascii_str(domain_str.as_str())?;
 //        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))?;
@@ -156,7 +156,7 @@ pub async fn async_execute_work(ip: &str, blocks: &[BlockToStream], cfg: &Config
         )?;
 
         // headers
-        write!(req, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, cfg.input_bucket_region)?;
+        write!(req, "Host: {}.s3-{}.amazonaws.com\r\n", cfg.input_bucket_name, bucket_region)?;
         write!(req, "User-Agent: s3bigfile\r\n")?;
         write!(req, "Accept: */*\r\n")?;
         write!(req, "Range: bytes={}-{}\r\n", b.start,  b.start + b.length - 1)?;

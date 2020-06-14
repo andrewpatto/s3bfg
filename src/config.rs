@@ -1,4 +1,4 @@
-use clap::{self, Arg, App, ArgMatches};
+use clap::{self, Arg, App, ArgMatches, AppSettings};
 use std::path::Path;
 use std::time::Duration;
 use regex::Regex;
@@ -16,8 +16,6 @@ pub struct Config {
     pub memory_only: bool,
 
     pub aws_profile: Option<String>,
-
-    pub input_bucket_region: String,
 
     pub dns_server: String,
     pub dns_concurrent: usize,
@@ -57,39 +55,49 @@ impl Config {
             .version("1.0")
             .author("AP")
             .about("The big gun of S3 file copying")
-
-            // the only mandatory elements are the in/out
-            .arg(Arg::with_name("in")
-                .about("The input path (s3 uri, s3 https)")
-                .required(true)
-                .index(1))
-
-            .arg(Arg::with_name("out")
-                .about("The output path (local file, /dev/null)")
-                .required(true)
-                .index(2))
-
-            .arg(Arg::with_name(S3_REGION_ARG)
-                .long(S3_REGION_ARG)
-                .about("The S3 region of the input bucket, defaults to the current region when running in AWS")
-                .takes_value(true))
+            .setting(AppSettings::SubcommandRequiredElseHelp)
 
             .arg(Arg::with_name("profile")
                 .long("profile")
-                .about("The AWS profile to assume, else use default credentials from the environment")
+                .about("An AWS profile to assume")
                 .takes_value(true))
 
-            // control what we do with the file when we get in from S3
-            .arg(Arg::with_name("memory")
-                .long("memory")
-                .about("If specified tells us to just transfer the data to memory and not then write it out to disk"))
-            .arg(Arg::with_name("output-file")
-                .long("output-file")
-                .about("Sets the output file to write to, defaults to a file with the same basename as S3 in the current directory")
+            .arg(Arg::with_name("connections")
+                .long("connections")
+                .about("Sets the number of connections to S3 to stream simultaneously")
+                .default_value("10")
                 .takes_value(true))
-            .arg(Arg::with_name("fallocate")
-                .long("fallocate")
-                .about("If specified tells us to create the blank destination file using fallocate()"))
+
+
+            .subcommand(App::new("down")
+                .about("brings file down from S3")
+                .arg(Arg::with_name("s3")
+                    .about("The S3 location (s3 uri, s3 https)")
+                    .required(true)
+                    .index(1))
+                .arg(Arg::with_name("local")
+                    .about("The local path to write to or /dev/null to mean memory benchmark")
+                    .required(true)
+                    .index(2))
+                .arg(Arg::with_name("fallocate")
+                    .long("fallocate")
+                    .about("If specified tells us to create the blank destination file using fallocate()"))
+            )
+
+            .subcommand(App::new("up")
+                .about("sends file to S3")
+                .arg(Arg::with_name("local")
+                    .about("The local path to read")
+                    .required(true)
+                    .index(1))
+                .arg(Arg::with_name("s3")
+                    .about("The S3 destination (s3 uri, s3 https)")
+                    .required(true)
+                    .index(2))
+            )
+
+
+
 
             .arg(Arg::with_name("segment-size")
                 .long("segment-size")
@@ -102,11 +110,6 @@ impl Config {
                 .default_value("1024")
                 .takes_value(true))
 
-            .arg(Arg::with_name("connections")
-                .long("connections")
-                .about("Sets the number of connections to S3 to use to execute the streaming gets")
-                .default_value("10")
-                .takes_value(true))
 
             .arg(Arg::with_name(SYNC_THREADS_ARG)
                 .long(SYNC_THREADS_ARG)
@@ -191,56 +194,55 @@ impl Config {
             }
         }
 
-        if region.is_empty() {
-            region = String::from(matches.value_of("s3-region").unwrap_or_else(|| {
-                println!("If not running in AWS you need to specify the region of the bucket");
-                std::process::exit(1);
-            }));
+        if let Some(sub_down) = matches.subcommand_matches("down") {
+            let (in_bucket_name, in_key, out_filename, memory_only) = parse_in_out(&sub_down);
+
+            return Config {
+                input_bucket_name: in_bucket_name.to_string(),
+                input_bucket_key: in_key.to_string(),
+                output_write_filename: out_filename,
+
+                //input_bucket_region: region,
+                aws_profile: if matches.is_present("profile") { Some(String::from(matches.value_of("profile").unwrap())) } else { None } ,
+
+                // DNS settings
+                dns_server,
+                dns_concurrent: matches.value_of_t::<usize>("dns-concurrent").unwrap_or(24),
+                dns_rounds: matches.value_of_t::<usize>("dns-rounds").unwrap(),
+                dns_round_delay: Duration::from_millis(matches.value_of_t::<u64>("dns-round-delay").unwrap()),
+
+                memory_only: memory_only,
+
+                s3_connections: matches.value_of_t::<usize>("connections").unwrap(),
+
+                synchronous_threads: matches.value_of_t::<usize>(SYNC_THREADS_ARG).unwrap_or(0),
+
+                asynchronous_basic: matches.is_present(ASYNC_USE_BASIC_ARG),
+                asynchronous_core_threads: matches.value_of_t::<usize>(ASYNC_CORE_THREADS_ARG).unwrap_or(0),
+                asynchronous_max_threads: matches.value_of_t::<usize>(ASYNC_MAX_THREADS_ARG).unwrap_or(0),
+
+                segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap_or(8),
+                segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8) * 1024 * 1024,
+
+                fallocate: matches.is_present("fallocate"),
+                asynchronous: matches.is_present("async"),
+
+                instance_type: aws_instance_type,
+            }
         }
 
-        let (in_bucket_name, in_key, out_filename, memory_only) = parse_in_out(&matches);
-
-        Config {
-            input_bucket_name: in_bucket_name.to_string(),
-            input_bucket_key: in_key.to_string(),
-            output_write_filename: out_filename,
-
-
-
-            input_bucket_region: region,
-            aws_profile: if matches.is_present("profile") { Some(String::from(matches.value_of("profile").unwrap())) } else { None } ,
-
-            // DNS settings
-            dns_server,
-            dns_concurrent: matches.value_of_t::<usize>("dns-concurrent").unwrap_or(24),
-            dns_rounds: matches.value_of_t::<usize>("dns-rounds").unwrap(),
-            dns_round_delay: Duration::from_millis(matches.value_of_t::<u64>("dns-round-delay").unwrap()),
-
-            memory_only: memory_only,
-
-            s3_connections: matches.value_of_t::<usize>("connections").unwrap(),
-
-            synchronous_threads: matches.value_of_t::<usize>(SYNC_THREADS_ARG).unwrap_or(0),
-
-            asynchronous_basic: matches.is_present(ASYNC_USE_BASIC_ARG),
-            asynchronous_core_threads: matches.value_of_t::<usize>(ASYNC_CORE_THREADS_ARG).unwrap_or(0),
-            asynchronous_max_threads: matches.value_of_t::<usize>(ASYNC_MAX_THREADS_ARG).unwrap_or(0),
-
-            segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap_or(8),
-            segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8) * 1024 * 1024,
-
-            fallocate: matches.is_present("fallocate"),
-            asynchronous: matches.is_present("async"),
-
-            instance_type: aws_instance_type,
+        if let Some(sub_up) = matches.subcommand_matches("up") {
+            println!("Up not implemented yet");
+            std::process::exit(1);
         }
+
+        println!("One of down or up must be chosen");
+        std::process::exit(1);
     }
-
-
 }
 
 fn matches_s3_uri(arg: &str) -> Option<(String, String)> {
-    /// Rules for Bucket Naming
+    // Rules for Bucket Naming
     // The following rules apply for naming S3 buckets:
     // Bucket names must be between 3 and 63 characters long.
     // Bucket names can consist only of lowercase letters, numbers, dots (.), and hyphens (-).
@@ -278,15 +280,15 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
     // memory only mode which skips the entire output IO (useful for network benchmarking)
     let mut memory_only = false;
 
-    let i = String::from(matches.value_of("in").unwrap());
-    let o = Path::new(matches.value_of("out").unwrap());
+    let i = String::from(matches.value_of("s3").unwrap());
+    let o = Path::new(matches.value_of("local").unwrap());
 
     let s3 = matches_s3_uri(i.as_str()).unwrap_or_else(|| {
         println!("Input must be an S3 path in the form s3://<bucket>/<key>");
         std::process::exit(1);
     });
 
-    if o.is_absolute() && o.ends_with("null") {
+    if o.is_absolute() && o.ends_with("null") && o.starts_with("/dev") {
         memory_only = true;
     }
 
@@ -294,7 +296,7 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
     let key_as_filename = String::from(Path::new(s3.1.as_str()).file_name().unwrap().to_str().unwrap());
 
     // determine a suitable local path from the info we have
-    let mut local: String;
+    let local: String;
 
     // if the local file specified exists then we work out if it is a directory first
     let md_result = metadata(o);
@@ -308,8 +310,6 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
     } else {
         local = String::from(o.to_str().unwrap());
     }
-
-    println!("{}", local);
 
     return (String::from(s3.0),
             String::from(s3.1.as_str()),

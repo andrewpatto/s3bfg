@@ -1,5 +1,4 @@
 extern crate nix;
-extern crate ureq;
 
 use std::convert::TryInto;
 use std::str;
@@ -42,7 +41,7 @@ fn main() -> std::io::Result<()> {
     let config = Config::new();
 
     if config.memory_only {
-        println!("Copying file s3://{}/{} to memory", config.input_bucket_name, config.input_bucket_key);
+        println!("Copying file s3://{}/{} to /dev/null (pure network->memory benchmark)", config.input_bucket_name, config.input_bucket_key);
     } else {
         println!("Copying file s3://{}/{} to {}", config.input_bucket_name, config.input_bucket_key, config.output_write_filename.as_ref().unwrap());
     }
@@ -51,25 +50,13 @@ fn main() -> std::io::Result<()> {
     println!("DNS server chosen: {}", config.dns_server);
     println!("Aiming for {} distinct concurrent connections to S3", config.s3_connections);
 
-    {
-        let mut head_rt = Builder::new()
-            .enable_all()
-            .threaded_scheduler()
-            .build()
-            .unwrap();
+    let (total_size_bytes, bucket_region) = find_source_size_and_region(&config);
 
-        let size = head_rt.block_on(find_file_size_and_correct_region(&config));
-
-        println!("{:?}", size);
+    if !config.memory_only {
+        create_empty_target_file(&config.output_write_filename.clone().unwrap().as_ref(), total_size_bytes.try_into().unwrap())?;
     }
 
     return Ok(());
-
-    let total_size_bytes: u64 = head_size_from_s3(config.input_bucket_name.as_str(), config.input_bucket_key.as_str(), config.input_bucket_region.as_str()).unwrap_or_default();
-
-    if !config.memory_only {
-        create_empty_target_file(config.output_write_filename.unwrap().as_str(), total_size_bytes.try_into().unwrap())?;
-    }
 
     let mut blocks = vec![];
 
@@ -116,7 +103,7 @@ fn main() -> std::io::Result<()> {
 
 
             for _c in 0..config.dns_concurrent {
-                dns_futures.push(populate_a_dns(&connection_tracker, &config));
+                dns_futures.push(populate_a_dns(&connection_tracker, &config, bucket_region.as_ref()));
             }
 
             let res = dns_rt.block_on(join_all(dns_futures));
@@ -140,10 +127,10 @@ fn main() -> std::io::Result<()> {
     let transfer_started = Instant::now();
 
     if !config.asynchronous {
-        sync_execute(&connection_tracker, &blocks, &config);
+        sync_execute(&connection_tracker, &blocks, &config, bucket_region.as_ref());
 
     } else {
-        async_execute(&connection_tracker, &blocks, &config);
+        async_execute(&connection_tracker, &blocks, &config, bucket_region.as_ref());
 
     }
 
@@ -162,18 +149,19 @@ fn main() -> std::io::Result<()> {
     Ok(())
 }
 
-// we need to start by working out how large the actual file is before segmenting
-fn head_size_from_s3(s3_bucket: &str, s3_key: &str, s3_region: &str) -> Result<u64, &'static str> {
-    let src = format!("https://{}.s3-{}.amazonaws.com{}", s3_bucket, s3_region, s3_key);
-    let headresp = ureq::head(src.as_str())
-        //.set("X-My-Header", "Secret")
-        .call();
+///
+///
+fn find_source_size_and_region(config: &Config) -> (u64, String) {
+    let mut head_rt = Builder::new()
+        .enable_all()
+        .threaded_scheduler()
+        .build()
+        .unwrap();
 
-    let size = headresp.header("Content-Length").unwrap();
+    let head_result = head_rt.block_on(find_file_size_and_correct_region(&config)).unwrap();
 
-    Ok(size.parse::<u64>().unwrap())
+    return (head_result.0, head_result.1.name().to_string())
 }
-
 
 /*
 ssm-user@ip-172-31-8-71:~$ curl -s http://169.254.169.254/latest/dynamic/instance-identity/document

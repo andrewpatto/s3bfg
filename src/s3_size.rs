@@ -3,7 +3,7 @@ use std::convert::TryInto;
 use std::error::Error;
 use std::fmt::Display;
 use std::io;
-use std::str::FromStr;
+use std::str::{FromStr, from_utf8};
 use std::time::Duration;
 
 use regex::Regex;
@@ -15,8 +15,9 @@ use rusoto_sts::{StsAssumeRoleSessionCredentialsProvider, StsClient};
 use tokio::runtime::Builder;
 
 use crate::config::Config;
+use rusoto_core::signature::{SignedRequest, Params};
 
-pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(i64, Region), io::Error> {
+pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
 
     // we start with a guess at the region of the S3 bucket and refine as we discover
     // more
@@ -81,18 +82,55 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(i64, Reg
         if head_result.is_err() {
             let raw_head_error_result = format!("{:#?}", head_result.unwrap_err());
 
-            let re = Regex::new(r##""x-amz-bucket-region": "(?P<region>[a-z0-9-]+)""##).unwrap();
+            let re_region = Regex::new(r##""x-amz-bucket-region": "(?P<region>[a-z0-9-]+)""##).unwrap();
+            let re_status = Regex::new(r##"status: (?P<status>[0-9]+)"##).unwrap();
 
-            let caps = re.captures(raw_head_error_result.as_str());
+            let caps_region = re_region.captures(raw_head_error_result.as_str()).unwrap_or_else(|| {
 
-            region_attempt = Region::from_str(caps.unwrap().name("region").unwrap().as_str()).unwrap();
+                let caps_status = re_status.captures(raw_head_error_result.as_str());
+
+                if caps_status.is_some() {
+                    println!("Couldn't access S3 source due to status {}", caps_status.unwrap().name("status").unwrap().as_str());
+                } else {
+                    println!("Couldn't find S3 source with unknown error {}", raw_head_error_result);
+                }
+
+                std::process::exit(1);
+            });
+
+            let region_from_re = caps_region.name("region").unwrap();
+
+            region_attempt = Region::from_str(region_from_re.as_str()).unwrap();
 
             println!("Based on AWS HEAD request we now believe the S3 bucket is in {}", region_attempt.name());
 
             continue;
         }
 
-        return Ok((head_result.unwrap().content_length.unwrap(), region_attempt.clone()));
+        let mut request = SignedRequest::new("HEAD", "s3", &region_attempt, "/adasda/asddadad");
+        request.add_header("Range", "1-100");
+        request.set_hostname(Option::from(String::from("s3-asdsadad.aws.com")));
+
+        //let mut params = Params::new();
+        //if let Some(ref x) = input.part_number {
+        //    params.put("partNumber", x);
+        //}
+        //if let Some(ref x) = input.version_id {
+        //    params.put("versionId", x);
+        //}
+        //request.set_params(params);
+
+        println!("{:?}", request);
+        request.sign(&ChainProvider::new().credentials().await.unwrap());
+        let auth = request.headers.get("authorization").unwrap().iter().next().unwrap();
+        println!("{:?}", from_utf8(auth));
+
+
+        //let response = s3_client
+        //    .sign(request);
+
+
+        return Ok((head_result.unwrap().content_length.unwrap() as u64, region_attempt.clone()));
     }
 
     /*let cred_provider =  DefaultCredentialsProvider::new().unwrap();
