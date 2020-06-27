@@ -8,8 +8,10 @@ edition = "2018"
 
 [dependencies]
 clap = "3.0.0-beta.1"
+http = "*"
 httparse = "*"
 humansize = "*"
+hyper = "*"
 futures = "*"
 native-tls = "*"
 nix = "*"
@@ -17,6 +19,7 @@ rand = "*"
 rayon = "*"
 regex = "*"
 rusoto_core = "*"
+rusoto_credential = "*"
 rusoto_s3 = "*"
 rusoto_sts = "*"
 tokio = { version = "*", features = ["full"] }

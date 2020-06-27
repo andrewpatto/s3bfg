@@ -3,27 +3,53 @@ use std::convert::TryInto;
 use std::error::Error;
 use std::fmt::Display;
 use std::io;
-use std::str::{FromStr, from_utf8};
+use std::str::{from_utf8, FromStr};
 use std::time::Duration;
 
 use regex::Regex;
+use rusoto_core::credential::{
+    AutoRefreshingProvider, ChainProvider, ProfileProvider, ProvideAwsCredentials,
+};
 use rusoto_core::{HttpClient, Region};
-use rusoto_core::credential::{AutoRefreshingProvider, ChainProvider, ProfileProvider, ProvideAwsCredentials};
-use rusoto_s3::{GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest, S3, S3Client};
 use rusoto_s3::util::{PreSignedRequest, PreSignedRequestOption};
+use rusoto_s3::{
+    GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest, S3Client, S3,
+};
 use rusoto_sts::{StsAssumeRoleSessionCredentialsProvider, StsClient};
 use tokio::runtime::Builder;
 
 use crate::config::Config;
-use rusoto_core::signature::{SignedRequest, Params};
+use rusoto_core::signature::{Params, SignedRequest};
 
-pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
+/// Returns the size in bytes and real region of the S3 file that has been specified in `cfg`.
+///
+pub fn find_file_size_and_correct_region_sync(cfg: &Config) -> (u64, Region) {
+    // we don't know if the rest of our app is using rayon or with what setup -
+    // for this purpose we just want a pretty standard one - as all we are doing
+    // is a single HEAD request
+    let mut head_rt = Builder::new()
+        .enable_all()
+        .threaded_scheduler()
+        .build()
+        .unwrap();
 
-    // we start with a guess at the region of the S3 bucket and refine as we discover
-    // more
+    return head_rt
+        .block_on(_find_file_size_and_correct_region(&cfg))
+        .unwrap();
+}
+
+/// Returns the size in bytes and real region of the S3 file that has been specified in `cfg`.
+///
+/// Uses the standard S3 HEAD or GET object operation (at this point we are not yet
+/// optimising for speed)
+async fn _find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
+    // we start with a guess at the region of the S3 bucket and refine as we discover more
     let mut region_attempt = Region::default();
 
-    println!("Starting on the assumption the S3 bucket is in region {}", region_attempt.name());
+    println!(
+        "Starting on the assumption the S3 bucket is in region {}",
+        region_attempt.name()
+    );
 
     loop {
         let s3_client: S3Client;
@@ -40,19 +66,18 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
             s3_client = S3Client::new_with(
                 HttpClient::new().expect("failed to create request dispatcher"),
                 profile_provider,
-            region_attempt.clone()
+                region_attempt.clone(),
             );
 
-            /*let assume_role_provider = StsAssumeRoleSessionCredentialsProvider::new(
-                sts,
-                "arn:aws:iam::something:role/something".to_owned(),
-                cfg.aws_profile.clone().unwrap(),
-                None, None, None, None
-            );
+        /*let assume_role_provider = StsAssumeRoleSessionCredentialsProvider::new(
+            sts,
+            "arn:aws:iam::something:role/something".to_owned(),
+            cfg.aws_profile.clone().unwrap(),
+            None, None, None, None
+        );
 
-            let auto_refreshing_provider = AutoRefreshingProvider::new(assume_role_provider); */
-        }
-        else {
+        let auto_refreshing_provider = AutoRefreshingProvider::new(assume_role_provider); */
+        } else {
             println!("Using default to obtain credentials");
 
             let mut chain_provider = ChainProvider::new();
@@ -82,160 +107,147 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
         if head_result.is_err() {
             let raw_head_error_result = format!("{:#?}", head_result.unwrap_err());
 
-            let re_region = Regex::new(r##""x-amz-bucket-region": "(?P<region>[a-z0-9-]+)""##).unwrap();
+            let re_region =
+                Regex::new(r##""x-amz-bucket-region": "(?P<region>[a-z0-9-]+)""##).unwrap();
             let re_status = Regex::new(r##"status: (?P<status>[0-9]+)"##).unwrap();
 
-            let caps_region = re_region.captures(raw_head_error_result.as_str()).unwrap_or_else(|| {
+            let caps_region = re_region
+                .captures(raw_head_error_result.as_str())
+                .unwrap_or_else(|| {
+                    let caps_status = re_status.captures(raw_head_error_result.as_str());
 
-                let caps_status = re_status.captures(raw_head_error_result.as_str());
+                    if caps_status.is_some() {
+                        println!(
+                            "Couldn't access S3 source due to status {}",
+                            caps_status.unwrap().name("status").unwrap().as_str()
+                        );
+                    } else {
+                        println!(
+                            "Couldn't find S3 source with unknown error {}",
+                            raw_head_error_result
+                        );
+                    }
 
-                if caps_status.is_some() {
-                    println!("Couldn't access S3 source due to status {}", caps_status.unwrap().name("status").unwrap().as_str());
-                } else {
-                    println!("Couldn't find S3 source with unknown error {}", raw_head_error_result);
-                }
-
-                std::process::exit(1);
-            });
+                    std::process::exit(1);
+                });
 
             let region_from_re = caps_region.name("region").unwrap();
 
             region_attempt = Region::from_str(region_from_re.as_str()).unwrap();
 
-            println!("Based on AWS HEAD request we now believe the S3 bucket is in {}", region_attempt.name());
+            println!(
+                "Based on AWS HEAD request we now believe the S3 bucket is in {}",
+                region_attempt.name()
+            );
 
             continue;
         }
 
-        let mut request = SignedRequest::new("HEAD", "s3", &region_attempt, "/adasda/asddadad");
-        request.add_header("Range", "1-100");
-        request.set_hostname(Option::from(String::from("s3-asdsadad.aws.com")));
-
-        //let mut params = Params::new();
-        //if let Some(ref x) = input.part_number {
-        //    params.put("partNumber", x);
-        //}
-        //if let Some(ref x) = input.version_id {
-        //    params.put("versionId", x);
-        //}
-        //request.set_params(params);
-
-        println!("{:?}", request);
-        request.sign(&ChainProvider::new().credentials().await.unwrap());
-        let auth = request.headers.get("authorization").unwrap().iter().next().unwrap();
-        println!("{:?}", from_utf8(auth));
-
-
-        //let response = s3_client
-        //    .sign(request);
-
-
-        return Ok((head_result.unwrap().content_length.unwrap() as u64, region_attempt.clone()));
+        return Ok((
+            head_result.unwrap().content_length.unwrap() as u64,
+            region_attempt.clone(),
+        ));
     }
 
     /*let cred_provider =  DefaultCredentialsProvider::new().unwrap();
 
-    {
-        let options = PreSignedRequestOption {
-            expires_in: Duration::from_secs(60 * 30),
-        };
-        let presigned_multipart_put = part_req2.get_presigned_url(region, credentials, &options);
-        println!("presigned multipart put: {:#?}", presigned_multipart_put);
-        let client = reqwest::Client::new();
-        let res = client
-            .put(&presigned_multipart_put)
-            .body(String::from("foo"))
-            .send()
-            .await
-            .expect("Multipart put with presigned url failed");
-        assert_eq!(res.status(), http::StatusCode::OK);
-        let e_tag = res.headers().get("ETAG").unwrap().to_str().unwrap();
-        completed_parts.push(CompletedPart {
-            e_tag: Some(e_tag.to_string()),
-            part_number: Some(part_req2.part_number),
-        });
+        {
+            let options = PreSignedRequestOption {
+                expires_in: Duration::from_secs(60 * 30),
+            };
+            let presigned_multipart_put = part_req2.get_presigned_url(region, credentials, &options);
+            println!("presigned multipart put: {:#?}", presigned_multipart_put);
+            let client = reqwest::Client::new();
+            let res = client
+                .put(&presigned_multipart_put)
+                .body(String::from("foo"))
+                .send()
+                .await
+                .expect("Multipart put with presigned url failed");
+            assert_eq!(res.status(), http::StatusCode::OK);
+            let e_tag = res.headers().get("ETAG").unwrap().to_str().unwrap();
+            completed_parts.push(CompletedPart {
+                e_tag: Some(e_tag.to_string()),
+                part_number: Some(part_req2.part_number),
+            });
+        }
+
+        pub trait PreSignedRequest {
+        /// http://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
+        fn get_presigned_url(
+            &self,
+            region: &Region,
+            credentials: &AwsCredentials,
+            option: &PreSignedRequestOption,
+        ) -> String;
     }
 
-    pub trait PreSignedRequest {
-    /// http://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
-    fn get_presigned_url(
-        &self,
-        region: &Region,
-        credentials: &AwsCredentials,
-        option: &PreSignedRequestOption,
-    ) -> String;
-}
+    impl PreSignedRequest for GetObjectRequest {
+        /// https://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectGET.html
+        fn get_presigned_url(
+            &self,
+            region: &Region,
+            credentials: &AwsCredentials,
+            option: &PreSignedRequestOption,
+        ) -> String {
+            let request_uri = format!("/{bucket}/{key}", bucket = self.bucket, key = self.key);
+            let mut request = SignedRequest::new("GET", "s3", &region, &request_uri);
+            let mut params = Params::new();
 
-impl PreSignedRequest for GetObjectRequest {
-    /// https://docs.aws.amazon.com/AmazonS3/latest/API/RESTObjectGET.html
-    fn get_presigned_url(
-        &self,
-        region: &Region,
-        credentials: &AwsCredentials,
-        option: &PreSignedRequestOption,
-    ) -> String {
-        let request_uri = format!("/{bucket}/{key}", bucket = self.bucket, key = self.key);
-        let mut request = SignedRequest::new("GET", "s3", &region, &request_uri);
-        let mut params = Params::new();
+            add_headers!(
+                self, request;
+                range, "Range";
+                if_modified_since, "If-Modified-Since";
+                if_unmodified_since, "If-Unmodified-Since";
+                if_match, "If-Match";
+                if_none_match, "If-None-Match";
+                sse_customer_algorithm, "x-amz-server-side-encryption-customer-algorithm";
+                sse_customer_key, "x-amz-server-side-encryption-customer-key";
+                sse_customer_key_md5, "x-amz-server-side-encryption-customer-key-MD5";
+            );
 
-        add_headers!(
-            self, request;
-            range, "Range";
-            if_modified_since, "If-Modified-Since";
-            if_unmodified_since, "If-Unmodified-Since";
-            if_match, "If-Match";
-            if_none_match, "If-None-Match";
-            sse_customer_algorithm, "x-amz-server-side-encryption-customer-algorithm";
-            sse_customer_key, "x-amz-server-side-encryption-customer-key";
-            sse_customer_key_md5, "x-amz-server-side-encryption-customer-key-MD5";
-        );
+            add_params!(
+                self, params;
+                part_number, "partNumber";
+                response_content_type, "response-content-type";
+                response_content_language, "response-content-language";
+                response_expires, "response-expires";
+                response_cache_control, "response-cache-control";
+                response_content_disposition, "response-content-disposition";
+                response_content_encoding, "response-content-encoding";
+                version_id, "versionId";
+            );
 
-        add_params!(
-            self, params;
-            part_number, "partNumber";
-            response_content_type, "response-content-type";
-            response_content_language, "response-content-language";
-            response_expires, "response-expires";
-            response_cache_control, "response-cache-control";
-            response_content_disposition, "response-content-disposition";
-            response_content_encoding, "response-content-encoding";
-            version_id, "versionId";
-        );
-
-        request.set_params(params);
-        request.generate_presigned_url(credentials, &option.expires_in, false)
+            request.set_params(params);
+            request.generate_presigned_url(credentials, &option.expires_in, false)
+        }
     }
-}
- impl PreSignedRequest for UploadPartRequest {
-    /// https://docs.aws.amazon.com/AmazonS3/latest/API/mpUploadUploadPart.html
-    fn get_presigned_url(
-        &self,
-        region: &Region,
-        credentials: &AwsCredentials,
-        option: &PreSignedRequestOption,
-    ) -> String {
-        let request_uri = format!("/{bucket}/{key}", bucket = self.bucket, key = self.key);
-        let mut request = SignedRequest::new("PUT", "s3", &region, &request_uri);
+     impl PreSignedRequest for UploadPartRequest {
+        /// https://docs.aws.amazon.com/AmazonS3/latest/API/mpUploadUploadPart.html
+        fn get_presigned_url(
+            &self,
+            region: &Region,
+            credentials: &AwsCredentials,
+            option: &PreSignedRequestOption,
+        ) -> String {
+            let request_uri = format!("/{bucket}/{key}", bucket = self.bucket, key = self.key);
+            let mut request = SignedRequest::new("PUT", "s3", &region, &request_uri);
 
-        request.add_param("partNumber", &self.part_number.to_string());
-        request.add_param("uploadId", &self.upload_id);
+            request.add_param("partNumber", &self.part_number.to_string());
+            request.add_param("uploadId", &self.upload_id);
 
-        add_headers!(
-            self, request;
-            content_length, "Content-Length";
-            content_md5, "Content-MD5";
-            sse_customer_algorithm, "x-amz-server-side-encryption-customer-algorithm";
-            sse_customer_key, "x-amz-server-side-encryption-customer-key";
-            sse_customer_key_md5, "x-amz-server-side-encryption-customer-key-MD5";
-            request_payer, "x-amz-request-payer";
-        );
+            add_headers!(
+                self, request;
+                content_length, "Content-Length";
+                content_md5, "Content-MD5";
+                sse_customer_algorithm, "x-amz-server-side-encryption-customer-algorithm";
+                sse_customer_key, "x-amz-server-side-encryption-customer-key";
+                sse_customer_key_md5, "x-amz-server-side-encryption-customer-key-MD5";
+                request_payer, "x-amz-request-payer";
+            );
 
-        request.generate_presigned_url(credentials, &option.expires_in, false)
+            request.generate_presigned_url(credentials, &option.expires_in, false)
+        }
     }
+        */
 }
-    */
-
-
-}
-
-

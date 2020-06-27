@@ -161,3 +161,14 @@ Overall: rate MiB/sec = 1112.922 (copied 110999812957 bytes in 95.11688s)
 
 ~/s3zoom gos-test-cases-public /GIB1_8398.bam GIB1_8398.bam -t 64 -s 64 --dns-server 10.1.0.2:53 --dns-count 100
 Overall: rate MiB/sec = 1112.7965 (copied 29400082342 bytes in 25.196074s)
+
+//  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080
+// m5d.8xlarge Overall: rate MiB/sec = 1131.3945 (copied 29400082342 bytes in 24.781897s)
+
+// m5d.24xlarge
+
+// Overall: rate MiB/sec = 1296.0306 (copied 29400082342 bytes in 21.633827s)
+// (base) [ec2-user@ip-10-1-1-63 data]$  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080 -t 32
+
+// Overall: rate MiB/sec = 895.3182 (copied 29400082342 bytes in 31.316357s)
+// (base) [ec2-user@ip-10-1-1-63 data]$  ~/s3zoom gos-test-cases-public /GIB1_8398.bam bf2 -s 83886080 -t 16

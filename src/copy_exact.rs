@@ -2,11 +2,8 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use futures::{Future, ready};
-use tokio::io::{
-    AsyncRead,
-    AsyncWrite,
-};
+use futures::{ready, Future};
+use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
@@ -21,13 +18,13 @@ pub struct CopyExact<'a, R: ?Sized, W: ?Sized> {
     readn_total: usize,
     readn_count: usize,
     writen_total: usize,
-    writen_count: usize
+    writen_count: usize,
 }
 
 pub fn copy_exact<'a, R, W>(reader: &'a mut R, writer: &'a mut W, exact: u64) -> CopyExact<'a, R, W>
-    where
-        R: AsyncRead + Unpin + ?Sized,
-        W: AsyncWrite + Unpin + ?Sized,
+where
+    R: AsyncRead + Unpin + ?Sized,
+    W: AsyncWrite + Unpin + ?Sized,
 {
     CopyExact {
         reader,
@@ -40,18 +37,21 @@ pub fn copy_exact<'a, R, W>(reader: &'a mut R, writer: &'a mut W, exact: u64) ->
         readn_total: 0,
         readn_count: 0,
         writen_total: 0,
-        writen_count: 0
+        writen_count: 0,
     }
 }
 
 impl<R, W> Future for CopyExact<'_, R, W>
-    where
-        R: AsyncRead + Unpin + ?Sized,
-        W: AsyncWrite + Unpin + ?Sized,
+where
+    R: AsyncRead + Unpin + ?Sized,
+    W: AsyncWrite + Unpin + ?Sized,
 {
-    type Output = io::Result<(u64,usize,usize)>;
+    type Output = io::Result<(u64, usize, usize)>;
 
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<(u64,usize,usize)>> {
+    fn poll(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<io::Result<(u64, usize, usize)>> {
         loop {
             // If our buffer is empty, then we need to read some data to
             // continue.
@@ -97,9 +97,11 @@ impl<R, W> Future for CopyExact<'_, R, W>
                 let me = &mut *self;
                 ready!(Pin::new(&mut *me.writer).poll_flush(cx))?;
 
-                return Poll::Ready(Ok((self.amt,
-                                       self.readn_total/self.readn_count,
-                                       self.writen_total/self.writen_count)));
+                return Poll::Ready(Ok((
+                    self.amt,
+                    self.readn_total / self.readn_count,
+                    self.writen_total / self.writen_count,
+                )));
             }
         }
     }

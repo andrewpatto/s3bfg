@@ -1,6 +1,10 @@
+### A single S3 connection
 
-By default connections to S3 servers are persistent (as per HTTP 1.1).
-Note: the addition of *any* keep alive header by the client (as per HTTP 1.0) apparently tells the S3 server to
+#### Limits
+
+By default, connections to S3 servers are persistent (as per HTTP 1.1).
+
+Fun fact 1: the addition of *any* keep alive header by the client (as per HTTP 1.0) apparently tells the S3 server to
 *not* make the connection persistent - no matter what the value is set to. So if you add a Connection: keep-alive
 to your headers the connection *will* be closed immediately after your first operation.
 
@@ -10,10 +14,12 @@ Experimentation puts this timeout at approximately 5 seconds.
 Whilst a single connection is capable of transferring many gigabytes of data, each single persistent connection
 can perform no more than 100 HTTP GET operations before the connection will be closed. This means that
 the size of the objects being fetched (in the case of partial files) will determine how much reuse can be
-made out of connections.
+made out of any single connection.
+
+#### Speed
 
 The maximum transfer rate over a single S3 connection is 95-100 MiB/s.
-(benchmarked on a m5d.8xlarge (which has guaranteed 1000+ MiB/s ethernet)). You can see this on an amply provisioned EC2 instance with
+(benchmarked on a m5d.8xlarge (which has guaranteed 1000+ MiB/s ethernet)). You can see this on any amply provisioned EC2 instance with
 a simple curl command
 
 `curl https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/bigfile.1 > bigfile.1`
@@ -25,7 +31,10 @@ $ curl https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/bigfile.1 >
 100 1083M  100 1083M    0     0  94.2M      0  0:00:11  0:00:11 --:--:-- 98.1M
 ```
 
-Note was are not using the aws s3 CLI at this point as it is multi threaded.
+Note we are deliberately not using the AWS S3 CLI at this point as it adds multi threading (see below).
+
+### What about multiple connections?
+
 
 
 

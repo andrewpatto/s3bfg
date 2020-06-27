@@ -1,8 +1,8 @@
-use clap::{self, Arg, App, ArgMatches, AppSettings};
-use std::path::Path;
-use std::time::Duration;
+use clap::{self, App, AppSettings, Arg, ArgMatches};
 use regex::Regex;
 use std::fs::metadata;
+use std::path::Path;
+use std::time::Duration;
 
 /// Stores information entered by the user and derived from the environment
 /// for this particular run of the tool.
@@ -18,19 +18,18 @@ pub struct Config {
     pub aws_profile: Option<String>,
 
     pub dns_server: String,
-    pub dns_concurrent: usize,
-    pub dns_rounds: usize,
+    pub dns_concurrent: u16,
+    pub dns_rounds: u16,
     pub dns_round_delay: Duration,
 
-
-    pub s3_connections: usize,
+    pub s3_connections: u16,
 
     // settings for the synchronous Rayon thread pool
-    pub synchronous_threads: usize,
+    pub synchronous_threads: u16,
 
     // settings for the asynchronous tokio runtime
-    pub asynchronous_core_threads: usize,
-    pub asynchronous_max_threads: usize,
+    pub asynchronous_core_threads: u16,
+    pub asynchronous_max_threads: u16,
     pub asynchronous_basic: bool,
 
     pub segment_size_mibs: u64,
@@ -42,6 +41,7 @@ pub struct Config {
     pub instance_type: String,
 }
 
+const PROFILE: &str = "profile";
 const S3_REGION_ARG: &str = "s3-region";
 const SYNC_THREADS_ARG: &str = "sync-threads";
 const ASYNC_CORE_THREADS_ARG: &str = "async-core-threads";
@@ -50,22 +50,23 @@ const ASYNC_USE_BASIC_ARG: &str = "async-use-basic";
 
 impl Config {
     pub fn new() -> Config {
-
         let matches = App::new("s3bfg")
             .version("1.0")
             .author("AP")
             .about("The big gun of S3 file copying")
             .setting(AppSettings::SubcommandRequiredElseHelp)
 
-            .arg(Arg::with_name("profile")
-                .long("profile")
+            .arg(Arg::with_name(PROFILE)
+                .long(PROFILE)
                 .about("An AWS profile to assume")
+                .global(true)
                 .takes_value(true))
 
             .arg(Arg::with_name("connections")
                 .long("connections")
                 .about("Sets the number of connections to S3 to stream simultaneously")
-                .default_value("10")
+                .default_value("16")
+                .global(true)
                 .takes_value(true))
 
 
@@ -102,6 +103,7 @@ impl Config {
             .arg(Arg::with_name("segment-size")
                 .long("segment-size")
                 .about("Sets the size in mebibytes of each independently streamed part of the file - multiples of 8 will generally match S3 part sizing")
+                .global(true)
                 .takes_value(true))
 
             .arg(Arg::with_name("expected-mibs")
@@ -114,46 +116,57 @@ impl Config {
             .arg(Arg::with_name(SYNC_THREADS_ARG)
                 .long(SYNC_THREADS_ARG)
                 .about("Sets the number of threads in the Rayon thread pool for synchronous gets, default is 0 to tell Rayon to detect core count")
+                .global(true)
+                .default_value("0")
                 .takes_value(true))
 
             .arg(Arg::with_name(ASYNC_CORE_THREADS_ARG)
                 .long(ASYNC_CORE_THREADS_ARG)
                 .about("Sets the number of core threads in the Tokio runtime, default is for Tokio to detect core count")
+                .global(true)
                 .takes_value(true))
             .arg(Arg::with_name(ASYNC_MAX_THREADS_ARG)
                 .long(ASYNC_MAX_THREADS_ARG)
                 .about("Sets the number of max threads in the Tokio runtime, default is 512")
+                .global(true)
                 .takes_value(true))
 
 
             .arg(Arg::with_name("dns-server")
                 .long("dns-server")
                 .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses, defaults to Google or AWS depending on detected location")
+                .global(true)
                 .takes_value(true))
             .arg(Arg::with_name("dns-concurrent")
                 .long("dns-concurrent")
                 .about("Sets the number of concurrent attempts that will be made to obtain S3 bucket IP addresses in each DNS round")
-                .default_value("32")
+                .default_value("16")
+                .global(true)
                 .takes_value(true))
             .arg(Arg::with_name("dns-rounds")
                 .long("dns-rounds")
-                .default_value("16")
-                .about("Sets the number of rounds of DNS lookups that will be performed looking for distinct S3 bucket IP addresses")
+                .default_value("8")
+                .global(true)
+                .about("Sets the maxmimum number of rounds of DNS lookups that will be performed looking for distinct S3 bucket IP addresses")
                 .takes_value(true))
             .arg(Arg::with_name("dns-round-delay")
                 .long("dns-round-delay")
-                .default_value("250")
+                .default_value("500")
+                .global(true)
                 .about("Sets the number of milliseconds between DNS rounds")
                 .takes_value(true))
 
             .arg(Arg::with_name("basic")
                 .long("basic")
+                .global(true)
                 .about("If specified tells us to use basic tokio runtime rather than threaded"))
             .arg(Arg::with_name("async")
                 .long("async")
+                .global(true)
                 .about("If specified tells us to use async code rather than sync"))
             .arg(Arg::with_name("not-ec2")
                 .long("not-ec2")
+                .global(true)
                 .about("If specified tells us that we are definitely not on an EC2 instance and we should not attempt to use EC2 tricks"))
 
             .get_matches();
@@ -203,32 +216,44 @@ impl Config {
                 output_write_filename: out_filename,
 
                 //input_bucket_region: region,
-                aws_profile: if matches.is_present("profile") { Some(String::from(matches.value_of("profile").unwrap())) } else { None } ,
+                aws_profile: if matches.is_present(PROFILE) {
+                    Some(String::from(matches.value_of(PROFILE).unwrap()))
+                } else {
+                    None
+                },
 
                 // DNS settings
                 dns_server,
-                dns_concurrent: matches.value_of_t::<usize>("dns-concurrent").unwrap_or(24),
-                dns_rounds: matches.value_of_t::<usize>("dns-rounds").unwrap(),
-                dns_round_delay: Duration::from_millis(matches.value_of_t::<u64>("dns-round-delay").unwrap()),
+                dns_concurrent: matches.value_of_t::<u16>("dns-concurrent").unwrap_or(24),
+                dns_rounds: matches.value_of_t::<u16>("dns-rounds").unwrap(),
+                dns_round_delay: Duration::from_millis(
+                    matches.value_of_t::<u64>("dns-round-delay").unwrap(),
+                ),
 
                 memory_only: memory_only,
 
-                s3_connections: matches.value_of_t::<usize>("connections").unwrap(),
+                s3_connections: matches.value_of_t::<u16>("connections").unwrap(),
 
-                synchronous_threads: matches.value_of_t::<usize>(SYNC_THREADS_ARG).unwrap_or(0),
+                synchronous_threads: matches.value_of_t::<u16>(SYNC_THREADS_ARG).unwrap_or(0),
 
                 asynchronous_basic: matches.is_present(ASYNC_USE_BASIC_ARG),
-                asynchronous_core_threads: matches.value_of_t::<usize>(ASYNC_CORE_THREADS_ARG).unwrap_or(0),
-                asynchronous_max_threads: matches.value_of_t::<usize>(ASYNC_MAX_THREADS_ARG).unwrap_or(0),
+                asynchronous_core_threads: matches
+                    .value_of_t::<u16>(ASYNC_CORE_THREADS_ARG)
+                    .unwrap_or(0),
+                asynchronous_max_threads: matches
+                    .value_of_t::<u16>(ASYNC_MAX_THREADS_ARG)
+                    .unwrap_or(0),
 
                 segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap_or(8),
-                segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8) * 1024 * 1024,
+                segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8)
+                    * 1024
+                    * 1024,
 
                 fallocate: matches.is_present("fallocate"),
                 asynchronous: matches.is_present("async"),
 
                 instance_type: aws_instance_type,
-            }
+            };
         }
 
         if let Some(sub_up) = matches.subcommand_matches("up") {
@@ -254,18 +279,23 @@ fn matches_s3_uri(arg: &str) -> Option<(String, String)> {
     // For best compatibility, we recommend that you avoid using dots (.) in bucket names, except for buckets that are used only for static website hosting. If you include dots in a bucket's name, you can't use virtual-host-style addressing over HTTPS, unless you perform your own certificate validation. This is because the security certificates used for virtual hosting of buckets don't work for buckets with dots in their names.
     // This limitation doesn't affect buckets used for static website hosting, because static website hosting is only available over HTTP. For more information about virtual-host-style addressing, see Virtual Hosting of Buckets. For more information about static website hosting, see Hosting a static website on Amazon S3.
 
-    let re = Regex::new(r##"s3://(?P<bucket>[A-za-z0-9-]{3,63})/(?P<key>[A-Za-z0-9-/\\.]+)"##).unwrap();
+    let re = Regex::new(
+        r##"s3://(?P<bucket>[a-z0-9][a-z0-9-\\.]{1,61}[a-z0-9])/(?P<key>[A-Za-z0-9-/\\.]+)"##,
+    )
+    .unwrap();
 
     let caps_result = re.captures(arg);
 
     return if caps_result.is_some() {
         let caps = caps_result.unwrap();
 
-        Some((String::from(caps.name("bucket").unwrap().as_str()),
-              String::from(caps.name("key").unwrap().as_str())))
+        Some((
+            String::from(caps.name("bucket").unwrap().as_str()),
+            String::from(caps.name("key").unwrap().as_str()),
+        ))
     } else {
         None
-    }
+    };
 }
 
 fn matches_dev_null(arg: &str) -> bool {
@@ -275,7 +305,6 @@ fn matches_dev_null(arg: &str) -> bool {
 }
 
 fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) {
-
     // if we notice we are asked to send to /dev/null we use that to put us in 'special'
     // memory only mode which skips the entire output IO (useful for network benchmarking)
     let mut memory_only = false;
@@ -293,7 +322,13 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
     }
 
     // the 'base' of the key is possibly going to be useful for us as a filename
-    let key_as_filename = String::from(Path::new(s3.1.as_str()).file_name().unwrap().to_str().unwrap());
+    let key_as_filename = String::from(
+        Path::new(s3.1.as_str())
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap(),
+    );
 
     // determine a suitable local path from the info we have
     let local: String;
@@ -311,10 +346,12 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
         local = String::from(o.to_str().unwrap());
     }
 
-    return (String::from(s3.0),
-            String::from(s3.1.as_str()),
-            Option::from(String::from(local)),
-            memory_only);
+    return (
+        String::from(s3.0),
+        String::from(s3.1.as_str()),
+        Option::from(String::from(local)),
+        memory_only,
+    );
 }
 
 /*

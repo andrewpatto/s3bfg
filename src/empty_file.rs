@@ -1,4 +1,4 @@
-use std::fs::{OpenOptions, File};
+use std::fs::{File, OpenOptions};
 use std::io;
 
 #[cfg(target_os = "linux")]
@@ -10,9 +10,9 @@ use std::os::unix::io::AsRawFd;
 
 #[cfg(target_os = "linux")]
 pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
-
     // because we want to let fallocate do its best we want to always work on a new file (disabled)
-    let file = OpenOptions::new().write(true)
+    let file = OpenOptions::new()
+        .write(true)
         .create(true)
         .open(write_filename)?;
 
@@ -27,10 +27,10 @@ pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File,
 
 #[cfg(not(target_os = "linux"))]
 pub fn create_empty_target_file(write_filename: &str, _size: i64) -> Result<File, io::Error> {
-    let file = OpenOptions::new().write(true)
+    let file = OpenOptions::new()
+        .write(true)
         .create(true)
         .open(write_filename)?;
 
     Ok(file)
 }
-
