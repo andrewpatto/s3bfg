@@ -104,6 +104,7 @@ impl Config {
                 .long("segment-size")
                 .about("Sets the size in mebibytes of each independently streamed part of the file - multiples of 8 will generally match S3 part sizing")
                 .global(true)
+                .default_value("64")
                 .takes_value(true))
 
             .arg(Arg::with_name("expected-mibs")
@@ -115,7 +116,7 @@ impl Config {
 
             .arg(Arg::with_name(SYNC_THREADS_ARG)
                 .long(SYNC_THREADS_ARG)
-                .about("Sets the number of threads in the Rayon thread pool for synchronous gets, default is 0 to tell Rayon to detect core count")
+                .about("Sets the number of threads in the Rayon thread pool for synchronous gets, default of 0 to tell Rayon to detect core count")
                 .global(true)
                 .default_value("0")
                 .takes_value(true))
@@ -224,7 +225,7 @@ impl Config {
 
                 // DNS settings
                 dns_server,
-                dns_concurrent: matches.value_of_t::<u16>("dns-concurrent").unwrap_or(24),
+                dns_concurrent: matches.value_of_t::<u16>("dns-concurrent").unwrap(),
                 dns_rounds: matches.value_of_t::<u16>("dns-rounds").unwrap(),
                 dns_round_delay: Duration::from_millis(
                     matches.value_of_t::<u64>("dns-round-delay").unwrap(),
@@ -234,7 +235,7 @@ impl Config {
 
                 s3_connections: matches.value_of_t::<u16>("connections").unwrap(),
 
-                synchronous_threads: matches.value_of_t::<u16>(SYNC_THREADS_ARG).unwrap_or(0),
+                synchronous_threads: matches.value_of_t::<u16>(SYNC_THREADS_ARG).unwrap(),
 
                 asynchronous_basic: matches.is_present(ASYNC_USE_BASIC_ARG),
                 asynchronous_core_threads: matches
@@ -244,8 +245,8 @@ impl Config {
                     .value_of_t::<u16>(ASYNC_MAX_THREADS_ARG)
                     .unwrap_or(0),
 
-                segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap_or(8),
-                segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap_or(8)
+                segment_size_mibs: matches.value_of_t::<u64>("segment-size").unwrap(),
+                segment_size_bytes: matches.value_of_t::<u64>("segment-size").unwrap()
                     * 1024
                     * 1024,
 
