@@ -1,3 +1,5 @@
+
+
 use http::Request;
 use hyper::Body;
 use native_tls::TlsConnector;
@@ -13,14 +15,14 @@ use std::str;
 use std::str::from_utf8;
 use std::sync::Arc;
 use std::time::Instant;
-
 use crate::config::Config;
-use crate::s3_ip_pool::S3IpPool;
 use crate::datatype::BlockToStream;
+use crate::s3_ip_pool::S3IpPool;
 use rusoto_core::signature::SignedRequest;
 use rusoto_core::Region;
 use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
 use std::convert::TryInto;
+use regex::Regex;
 
 // use nix::fcntl::OFlag;
 // const O_DIRECT: i32 = 0x4000;
@@ -30,7 +32,7 @@ use std::convert::TryInto;
 /// - multithreading
 /// - pool of destination S3 IP addresses
 pub fn sync_execute(
-    connection_tracker: &Arc<S3IpPool>,
+    s3_ip_pool: &Arc<S3IpPool>,
     blocks: &Vec<BlockToStream>,
     config: &Config,
     credentials: &AwsCredentials,
@@ -43,7 +45,7 @@ pub fn sync_execute(
         .build()
         .unwrap();
 
-    println!("Rayon thread pool is set up to operate with {} executions in parallel, across {} potential S3 endpoints", pool.current_num_threads(), connection_tracker.ip_count());
+    println!("Rayon thread pool is set up to operate with {} executions in parallel, across {} potential S3 endpoints", pool.current_num_threads(), s3_ip_pool.ip_count());
 
     pool.install(|| {
         blocks.into_par_iter()
@@ -51,11 +53,11 @@ pub fn sync_execute(
 
                 // we can have occasional (rare) network fails on reads so we just have to retry
                 // and hope it gets better.. so each block will retry 3 times and then fail
-                for _read_attempt in 1..3 {
+                for _read_attempt in 0..3 {
 
                     // we have no guarantees that we will have enough S3 IP addresses for our
                     // threads - so we have a pool and continually pick the least used
-                    let (tcp_addr, tcp_count) = connection_tracker.use_least_used_ip();
+                    let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
 
                     let current_thread_index = pool.current_thread_index().unwrap_or(999);
 
@@ -82,7 +84,7 @@ pub fn sync_execute(
             });
     });
 
-    let ips = connection_tracker.ips.lock().unwrap();
+    let ips = s3_ip_pool.ips.lock().unwrap();
 
     for ip in ips.iter() {
         println!(
@@ -117,8 +119,6 @@ fn sync_stream_range_from_s3(
         format!("/{}/{}", cfg.input_bucket_name, cfg.input_bucket_key).as_str(),
     );
 
-    // S3 is very finnicky here when doing v4 signing.. so some of the DNS names that resolve correctly
-    // are not correct for signing.. it *MUST* be s3-<region>.amazonaws.com
     aws_request.set_hostname(Option::from(format!(
         "s3-{}.amazonaws.com",
         bucket_region.name()
@@ -138,22 +138,17 @@ fn sync_stream_range_from_s3(
     let tcp_stream = TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
 
     // disable Nagle as we know we are just sending the whole request in one packet
-    // tcp_stream.set_nodelay(true).unwrap();
+    tcp_stream.set_nodelay(true)?;
 
     // we need to use the 'real' name of the host in the SSL setup - even though the IP address
     // we are using is from a pool
-    //let ssl_host = format!(
-    //    "{}.s3-{}.amazonaws.com",
-    //    cfg.input_bucket_name, bucket_region
-    //);
-
     let mut ssl_stream = connector.connect(aws_request.hostname().as_str(), tcp_stream)?;
 
     // build into a buffer and send in one go.
     let mut prelude: Vec<u8> = vec![];
     write!(prelude, "GET {} HTTP/1.1\n", aws_request.path())?;
     for (k, v) in aws_request.headers() {
-        write!(prelude, "{}: {}\n", k, from_utf8(v[0].as_ref()).unwrap());
+        write!(prelude, "{}: {}\n", k, from_utf8(v[0].as_ref()).unwrap())?;
     }
     // whilst this may be too pessimistic - for the moment it guarantees our read() will
     // only get data for our request
@@ -162,26 +157,48 @@ fn sync_stream_range_from_s3(
     write!(prelude, "\n")?;
 
     // if debugging
-    println!("{}", from_utf8(&prelude).unwrap());
+    // println!("{}", from_utf8(&prelude).unwrap());
 
     // return Ok(());
 
     // write all to the wire
     ssl_stream.write_all(&prelude[..])?;
 
-    //let mut progress_reader = ProgressReader::new(&mut tcp_stream, |progress: usize| {
-    //    total.fetch_add(progress, Ordering::SeqCst);
-    //});
-
     let mut reader = BufReader::with_capacity(1024 * 1024, ssl_stream);
 
-    // read HTTP headers until they are done
+    // parse the first line of the HTTP response - the status line - which in our S3 case is about all we care
+    // about for now
+    {
+        let mut status_line = String::new();
+
+        reader.read_line(&mut status_line)?;
+
+        let status_regex = Regex::new(
+            r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##,
+        ).unwrap();
+
+        let status_parse_result = status_regex.captures(status_line.as_str());
+
+        if status_parse_result.is_some() {
+            let status = status_parse_result.unwrap();
+
+            let status_code = status.name("code").unwrap().as_str();
+
+            if status_code != "200" && status_code != "206" {
+                bail!(status_code);
+            }
+        } else {
+            bail!("500")
+        }
+    }
+
+    // now read the rest of the HTTP headers until they are done
     loop {
         let mut line = String::new();
 
         let _read_status = reader.read_line(&mut line)?;
 
-        print!("{}", line);
+        // print!("{}", line);
 
         if line.eq("\r\n") {
             break;
@@ -200,7 +217,7 @@ fn sync_stream_range_from_s3(
         let oo = OpenOptions::new()
             .write(true)
             .create(false)
-            //                 .custom_flags(OFlag::O_DIRECT.bits())
+            // .custom_flags(OFlag::O_DIRECT.bits())
             .clone();
 
         //            println!("{:?}", oo);

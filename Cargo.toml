@@ -22,6 +22,7 @@ rusoto_core = "*"
 rusoto_credential = "*"
 rusoto_s3 = "*"
 rusoto_sts = "*"
+simple-error = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-rustls = "*"
 trust-dns-client = "*"

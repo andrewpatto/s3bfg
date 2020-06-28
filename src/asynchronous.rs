@@ -16,9 +16,9 @@ use tokio_rustls::client::TlsStream;
 use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
 
 use crate::config::Config;
-use crate::s3_ip_pool::S3IpPool;
 use crate::copy_exact::copy_exact;
 use crate::datatype::BlockToStream;
+use crate::s3_ip_pool::S3IpPool;
 
 pub fn async_execute(
     connection_tracker: &Arc<S3IpPool>,

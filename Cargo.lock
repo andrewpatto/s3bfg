@@ -1609,6 +1609,7 @@ dependencies = [
  "rusoto_credential",
  "rusoto_s3",
  "rusoto_sts",
+ "simple-error",
  "tokio",
  "tokio-rustls",
  "trust-dns-client",
@@ -1772,6 +1773,12 @@ dependencies = [
  "arc-swap",
  "libc",
 ]
+
+[[package]]
+name = "simple-error"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "339844c9af2d844b9230bb28e8f819a7790cbf20a29b5cbd2b59916a03a1ef51"
 
 [[package]]
 name = "slab"

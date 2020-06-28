@@ -94,7 +94,7 @@ impl S3IpPool {
 
             let res: Vec<Result<u32, std::io::Error>> = dns_rt.block_on(join_all(dns_futures));
 
-            print!("DNS round {:>2}: ", round+1);
+            print!("DNS round {:>2}: ", round + 1);
 
             for r in res {
                 if r.is_ok() {

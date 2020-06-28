@@ -18,6 +18,7 @@ pub struct Config {
     pub aws_profile: Option<String>,
 
     pub dns_server: String,
+    pub dns_desired_ips: u16,
     pub dns_concurrent: u16,
     pub dns_rounds: u16,
     pub dns_round_delay: Duration,
@@ -43,7 +44,6 @@ pub struct Config {
 
 const S3_ARG: &str = "s3uri";
 const LOCAL_ARG: &str = "local";
-
 
 const PROFILE_ARG: &str = "profile";
 const S3_REGION_ARG: &str = "s3-region";
@@ -137,6 +137,12 @@ impl Config {
                 .takes_value(true))
 
 
+            .arg(Arg::with_name("dns-desired-ips")
+                .long("dns-desired-ips")
+                .about("Sets the number of S3 IP addresses we are trying to put into our pull on startup, defaults to match the number of S3 connections unless overidden here")
+                .default_value("16")
+                .global(true)
+                .takes_value(true))
             .arg(Arg::with_name("dns-server")
                 .long("dns-server")
                 .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses, defaults to Google or AWS depending on detected location")
@@ -229,6 +235,14 @@ impl Config {
 
                 // DNS settings
                 dns_server,
+                // our logic here is - use the number of S3 connections as the 'desired'
+                // number of IP addresses - unless the user actually set this
+                // arg
+                dns_desired_ips: if matches.occurrences_of("dns-desired-ips") > 0 {
+                    matches.value_of_t::<u16>("dns-desired-ips").unwrap()
+                } else {
+                    matches.value_of_t::<u16>("connections").unwrap()
+                },
                 dns_concurrent: matches.value_of_t::<u16>("dns-concurrent").unwrap(),
                 dns_rounds: matches.value_of_t::<u16>("dns-rounds").unwrap(),
                 dns_round_delay: Duration::from_millis(

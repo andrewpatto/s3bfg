@@ -1,4 +1,6 @@
 extern crate nix;
+#[macro_use]
+extern crate simple_error;
 
 use std::convert::TryInto;
 use std::str;
@@ -16,19 +18,19 @@ use tokio::runtime::Builder;
 
 use crate::asynchronous::async_execute;
 use crate::config::Config;
-use crate::s3_ip_pool::S3IpPool;
 use crate::datatype::BlockToStream;
 use crate::empty_file::create_empty_target_file;
+use crate::s3_ip_pool::S3IpPool;
 use crate::s3_size::find_file_size_and_correct_region_sync;
 use crate::synchronous::sync_execute;
 
 mod asynchronous;
 mod config;
-mod s3_ip_pool;
 mod copy_exact;
 mod datatype;
 mod empty_file;
 mod ips;
+mod s3_ip_pool;
 mod s3_size;
 mod synchronous;
 
@@ -119,7 +121,7 @@ fn main() -> std::io::Result<()> {
         connection_tracker.populate_ips(
             &bucket_region,
             config.dns_server.as_str(),
-            config.s3_connections,
+            config.dns_desired_ips,
             config.dns_rounds,
             config.dns_concurrent,
             config.dns_round_delay,
