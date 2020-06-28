@@ -41,7 +41,11 @@ pub struct Config {
     pub instance_type: String,
 }
 
-const PROFILE: &str = "profile";
+const S3_ARG: &str = "s3uri";
+const LOCAL_ARG: &str = "local";
+
+
+const PROFILE_ARG: &str = "profile";
 const S3_REGION_ARG: &str = "s3-region";
 const SYNC_THREADS_ARG: &str = "sync-threads";
 const ASYNC_CORE_THREADS_ARG: &str = "async-core-threads";
@@ -56,9 +60,9 @@ impl Config {
             .about("The big gun of S3 file copying")
             .setting(AppSettings::SubcommandRequiredElseHelp)
 
-            .arg(Arg::with_name(PROFILE)
-                .long(PROFILE)
-                .about("An AWS profile to assume")
+            .arg(Arg::with_name(PROFILE_ARG)
+                .long(PROFILE_ARG)
+                .about("An AWS profile to use for credentials")
                 .global(true)
                 .takes_value(true))
 
@@ -72,12 +76,12 @@ impl Config {
 
             .subcommand(App::new("down")
                 .about("brings file down from S3")
-                .arg(Arg::with_name("s3")
-                    .about("The S3 location (s3 uri, s3 https)")
+                .arg(Arg::with_name(S3_ARG)
+                    .about("The S3 location (eg: s3://my-bucket/my-folder/my-file")
                     .required(true)
                     .index(1))
-                .arg(Arg::with_name("local")
-                    .about("The local path to write to or /dev/null to mean memory benchmark")
+                .arg(Arg::with_name(LOCAL_ARG)
+                    .about("The local path to write to (or /dev/null to run network only benchmark)")
                     .required(true)
                     .index(2))
                 .arg(Arg::with_name("fallocate")
@@ -85,7 +89,7 @@ impl Config {
                     .about("If specified tells us to create the blank destination file using fallocate()"))
             )
 
-            .subcommand(App::new("up")
+          /*  .subcommand(App::new("up")
                 .about("sends file to S3")
                 .arg(Arg::with_name("local")
                     .about("The local path to read")
@@ -95,23 +99,23 @@ impl Config {
                     .about("The S3 destination (s3 uri, s3 https)")
                     .required(true)
                     .index(2))
-            )
+            )*/
 
 
 
 
             .arg(Arg::with_name("segment-size")
                 .long("segment-size")
-                .about("Sets the size in mebibytes of each independently streamed part of the file - multiples of 8 will generally match S3 part sizing")
+                .about("Sets the size in mebibytes of each independently streamed part of the file - multiples of 8 generally preferred")
                 .global(true)
                 .default_value("64")
                 .takes_value(true))
 
-            .arg(Arg::with_name("expected-mibs")
+           /* .arg(Arg::with_name("expected-mibs")
                 .long("expected-mibs")
                 .about("Sets the expected MiB/s network bandwidth available to this process, which will then auto compute other settings to maximise performance")
                 .default_value("1024")
-                .takes_value(true))
+                .takes_value(true))*/
 
 
             .arg(Arg::with_name(SYNC_THREADS_ARG)
@@ -217,8 +221,8 @@ impl Config {
                 output_write_filename: out_filename,
 
                 //input_bucket_region: region,
-                aws_profile: if matches.is_present(PROFILE) {
-                    Some(String::from(matches.value_of(PROFILE).unwrap()))
+                aws_profile: if matches.is_present(PROFILE_ARG) {
+                    Some(String::from(matches.value_of(PROFILE_ARG).unwrap()))
                 } else {
                     None
                 },
@@ -310,8 +314,8 @@ fn parse_in_out(matches: &ArgMatches) -> (String, String, Option<String>, bool) 
     // memory only mode which skips the entire output IO (useful for network benchmarking)
     let mut memory_only = false;
 
-    let i = String::from(matches.value_of("s3").unwrap());
-    let o = Path::new(matches.value_of("local").unwrap());
+    let i = String::from(matches.value_of(S3_ARG).unwrap());
+    let o = Path::new(matches.value_of(LOCAL_ARG).unwrap());
 
     let s3 = matches_s3_uri(i.as_str()).unwrap_or_else(|| {
         println!("Input must be an S3 path in the form s3://<bucket>/<key>");

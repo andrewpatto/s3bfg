@@ -34,7 +34,6 @@ pub fn sync_execute(
     blocks: &Vec<BlockToStream>,
     config: &Config,
     credentials: &AwsCredentials,
-    client_region: &Region,
     bucket_region: &Region,
 ) {
     println!("Starting a threaded synchronous copy");

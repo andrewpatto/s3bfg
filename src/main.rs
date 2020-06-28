@@ -176,7 +176,6 @@ fn main() -> std::io::Result<()> {
             &config,
             &creds,
             &bucket_region,
-            &bucket_region,
         );
     } else {
         async_execute(
