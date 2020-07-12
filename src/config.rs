@@ -12,6 +12,8 @@ pub struct Config {
     pub input_bucket_name: String,
     pub input_bucket_key: String,
 
+    pub file_size_bytes: u64,
+
     pub output_write_filename: Option<String>,
     pub memory_only: bool,
 
@@ -224,7 +226,11 @@ impl Config {
             return Config {
                 input_bucket_name: in_bucket_name.to_string(),
                 input_bucket_key: in_key.to_string(),
+
                 output_write_filename: out_filename,
+
+                // will be set to the file size in bytes once discovered
+                file_size_bytes: 0,
 
                 //input_bucket_region: region,
                 aws_profile: if matches.is_present(PROFILE_ARG) {

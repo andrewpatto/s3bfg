@@ -19,6 +19,7 @@ use crate::config::Config;
 use crate::copy_exact::copy_exact;
 use crate::datatype::BlockToStream;
 use crate::s3_ip_pool::S3IpPool;
+use crate::s3_request_signed::make_signed_get_range_request;
 
 pub fn async_execute(
     connection_tracker: &Arc<S3IpPool>,
@@ -69,6 +70,8 @@ pub fn async_execute(
 
     let ips_db = connection_tracker.ips.lock().unwrap();
 
+
+
     let futures = FuturesUnordered::new();
 
     {
@@ -97,6 +100,10 @@ pub fn async_execute(
             starter += connection_chunk;
         }
     }
+
+    //let all_done =
+    //    futures::stream::iter(futures.into_iter())
+    //        .buffer_unordered(16);
 
     println!(
         "Tokio runtime is set up to operate with {} config, across {} potential S3 endpoints",
@@ -167,6 +174,11 @@ pub async fn async_execute_work(
     for b in blocks {
         let block_started = Instant::now();
 
+        let mut prelude: Vec<u8> = vec![];
+
+        // let real_hostname = make_signed_get_range_request(read_start, read_length, cfg, credentials, bucket_region, &mut prelude).unwrap();
+
+
         // build into a buffer so we can send in one go
         let mut req: Vec<u8> = vec![];
 
@@ -179,7 +191,7 @@ pub async fn async_execute_work(
             "Host: {}.s3-{}.amazonaws.com\r\n",
             cfg.input_bucket_name, bucket_region
         )?;
-        write!(req, "User-Agent: s3bigfile\r\n")?;
+        write!(req, "User-Agent: s3bfg\r\n")?;
         write!(req, "Accept: */*\r\n")?;
         write!(
             req,

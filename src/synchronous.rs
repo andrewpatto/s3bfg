@@ -1,9 +1,8 @@
 
 
-use http::Request;
-use hyper::Body;
 use native_tls::TlsConnector;
 use rayon::prelude::*;
+use log::Level;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io;
@@ -14,7 +13,7 @@ use std::os::unix::prelude::FileExt;
 use std::str;
 use std::str::from_utf8;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use crate::config::Config;
 use crate::datatype::BlockToStream;
 use crate::s3_ip_pool::S3IpPool;
@@ -23,6 +22,17 @@ use rusoto_core::Region;
 use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
 use std::convert::TryInto;
 use regex::Regex;
+use socket2::{Socket, Domain, Type, SockAddr};
+use rustls;
+use rustls::Session;
+use std::thread::{spawn, sleep};
+use metrics_core::{Builder, Drain, Observe, Observer, Label};
+use metrics_runtime::Controller;
+use metrics_runtime::{
+    Receiver, observers::YamlBuilder, exporters::LogExporter,
+};
+use crate::metrics_observer_ui::UiBuilder;
+use crate::s3_request_signed::make_signed_get_range_request;
 
 // use nix::fcntl::OFlag;
 // const O_DIRECT: i32 = 0x4000;
@@ -47,7 +57,28 @@ pub fn sync_execute(
 
     println!("Rayon thread pool is set up to operate with {} executions in parallel, across {} potential S3 endpoints", pool.current_num_threads(), s3_ip_pool.ip_count());
 
-    pool.install(|| {
+
+
+    pool.install( || {
+       // spawn(|| {
+       //     loop {
+       //         let snap = receiver.controller().snapshot();
+//
+  //              println!("{:?}", snap.into_measurements());
+
+    //            sleep(Duration::new(10, 0));
+      //      }
+            //LogExporter::new(
+            //    &receiver.controller(),
+            //    YamlBuilder::new(),
+            //    Level::Info,
+            //    Duration::from_secs(5),
+            //).run();
+       // });
+
+        let receiver = Receiver::builder().
+                    histogram(Duration::from_secs(1000), Duration::from_secs(60)).build().expect("failed to create receiver");
+
         blocks.into_par_iter()
             .for_each(|p: &BlockToStream| {
 
@@ -61,16 +92,21 @@ pub fn sync_execute(
 
                     let current_thread_index = pool.current_thread_index().unwrap_or(999);
 
-                    // for debug purposes we have an id for this streaming attempt
-                    let stream_id = format!("{}-{}-{}", tcp_addr, tcp_count, current_thread_index);
+                    let current_thread_label = format!("{}", current_thread_index);
 
-                    match sync_stream_range_from_s3(stream_id.as_str(),
+                    // for debug purposes we have an id for this streaming attempt
+                    // let stream_id = format!("{}-{}-{}", tcp_addr, tcp_count, current_thread_index);
+
+                    match sync_stream_range_from_s3(&receiver,
+                                                    current_thread_index,
                                                     tcp_addr,
                                                     p.start,
                                                     p.length,
                                                     p.start,
                                                     config, credentials, bucket_region) {
-                        Ok(_) => return,
+                        Ok(_) =>  {
+                            return;
+                        } ,
                         Err(e) => {
                             eprintln!("An S3 read attempt to {} failed with message {:?} but we will try again (up to 3 times)", tcp_addr, e);
 
@@ -82,6 +118,12 @@ pub fn sync_execute(
                 eprintln!("We attempted to read S3 block at {} ({} bytes) the maximum number of times and all failed - aborting the entire copy", p.start, p.length);
                 std::process::exit(1);
             });
+
+        let mut observer = UiBuilder::new().build();
+
+        receiver.controller().observe(&mut observer);
+
+        observer.render(config);
     });
 
     let ips = s3_ip_pool.ips.lock().unwrap();
@@ -94,10 +136,25 @@ pub fn sync_execute(
     }
 }
 
+// I own up - I don't really understand the correct way to do lifetimes in Rust!
+// It makes sense that metrics wants it labels to be `static - but not sure how
+// I can do that without literally instantiated like this
+const THREAD_LABELS: & [& str] = &[
+    "thread0",
+    "thread1",
+    "thread2",
+    "thread3",
+    "thread4",
+    "thread5",
+    "thread6",
+    "thread7",
+];
+
 /// Streams a portion of an S3 object from network to disk.
 ///
 fn sync_stream_range_from_s3(
-    stream_id: &str,
+    receiver: &Receiver,
+    thread_index: usize,
     tcp_host_addr: IpAddr,
     read_start: u64,
     read_length: u64,
@@ -106,55 +163,45 @@ fn sync_stream_range_from_s3(
     credentials: &AwsCredentials,
     bucket_region: &Region,
 ) -> Result<(), Box<dyn Error>> {
+
+    // our sink allows us to record performance metrics
+    let mut root_sink = receiver.sink();
+
+    let mut sink = root_sink.scoped(THREAD_LABELS[thread_index]);
+
+    // sink.add_default_labels(&[("thread", THREAD_LABELS[thread_index])]);
+
     // these are all our benchmark points - set initially to be the starting time
-    let now_started = Instant::now();
-    let now_response_body_received: Instant;
+    let now_started = sink.now();
 
-    // sets up the standard rusoto signed request for S3 GET
-    // (though we are about to use it in a non-standard way)
-    let mut aws_request = SignedRequest::new(
-        "GET",
-        "s3",
-        bucket_region,
-        format!("/{}/{}", cfg.input_bucket_name, cfg.input_bucket_key).as_str(),
-    );
-
-    aws_request.set_hostname(Option::from(format!(
-        "s3-{}.amazonaws.com",
-        bucket_region.name()
-    )));
-    aws_request.add_header("Accept", "*/*");
-    aws_request.add_header(
-        "Range",
-        format!("bytes={}-{}", read_start, read_start + read_length - 1).as_str(),
-    );
-
-    aws_request.sign(credentials);
 
     // println!("{:?}", aws_request);
+    let socket = Socket::new(Domain::ipv4(), Type::stream(), None).unwrap();
+    let socket_dest: SockAddr = SocketAddr::new(tcp_host_addr, 443).into();
+
+    // disable Nagle as we know we are just sending the whole request in one packet
+    socket.set_nodelay(true)?;
+
+    // println!("Linger {:?}", socket.linger()?);
+
+    socket.connect(&socket_dest)?;
+
+    let tcp_stream = socket.into_tcp_stream();
+        //TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
 
     let connector = TlsConnector::new().unwrap();
 
-    let tcp_stream = TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
+    let mut prelude: Vec<u8> = vec![];
+    let real_hostname = make_signed_get_range_request(read_start, read_length, cfg, credentials, bucket_region, &mut prelude).unwrap();
 
-    // disable Nagle as we know we are just sending the whole request in one packet
-    tcp_stream.set_nodelay(true)?;
 
     // we need to use the 'real' name of the host in the SSL setup - even though the IP address
     // we are using is from a pool
-    let mut ssl_stream = connector.connect(aws_request.hostname().as_str(), tcp_stream)?;
+    let mut ssl_stream = connector.connect(real_hostname.as_str(), tcp_stream)?;
 
-    // build into a buffer and send in one go.
-    let mut prelude: Vec<u8> = vec![];
-    write!(prelude, "GET {} HTTP/1.1\n", aws_request.path())?;
-    for (k, v) in aws_request.headers() {
-        write!(prelude, "{}: {}\n", k, from_utf8(v[0].as_ref()).unwrap())?;
-    }
-    // whilst this may be too pessimistic - for the moment it guarantees our read() will
-    // only get data for our request
-    write!(prelude, "{}: {}\n", "connection", "close")?;
-    write!(prelude, "{}: {}\n", "user-agent", "s3bfg")?;
-    write!(prelude, "\n")?;
+    let now_ssl_connected = sink.now();
+
+
 
     // if debugging
     // println!("{}", from_utf8(&prelude).unwrap());
@@ -172,6 +219,7 @@ fn sync_stream_range_from_s3(
         let mut status_line = String::new();
 
         reader.read_line(&mut status_line)?;
+
 
         let status_regex = Regex::new(
             r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##,
@@ -192,6 +240,8 @@ fn sync_stream_range_from_s3(
         }
     }
 
+    let now_http_status_response = sink.now();
+
     // now read the rest of the HTTP headers until they are done
     loop {
         let mut line = String::new();
@@ -210,6 +260,12 @@ fn sync_stream_range_from_s3(
 
     let copied_bytes = io::copy(&mut reader, &mut memory_buffer)?;
 
+    let now_http_data_read = sink.now();
+
+    sink.record_timing("http_block_data_transfer", now_http_status_response, now_http_data_read);
+
+    reader.into_inner().shutdown()?;
+
     // we can either just write into a memory buffer we then throw away
     // or onto a disk.. memory only allows benchmarking of networking without
     // disk io complicating things
@@ -227,22 +283,53 @@ fn sync_stream_range_from_s3(
         disk_buffer.write_all_at(&mut memory_buffer.get_ref(), write_location)?;
     }
 
-    now_response_body_received = Instant::now();
+    let now_data_written = sink.now();
 
-    let copied_duration = now_response_body_received.duration_since(now_started);
+    sink.record_timing(format!("stream_block_{}", read_length ), now_started, now_data_written);
+
+    let nano_taken = now_data_written - now_started;
+    let bytes_rate = copied_bytes * 1000 * 1000 / nano_taken;
+
+    root_sink.increment_counter("bytes_transferred", read_length);
+    root_sink.record_value("bytes_per_second", bytes_rate);
+
+    //now_response_body_received = Instant::now();
+
+    //let copied_duration = now_response_body_received.duration_since(now_started);
 
     assert_eq!(copied_bytes, read_length);
 
-    println!(
-        "{}: rate MiB/sec = {} (copied {} bytes in {}s)",
-        stream_id,
-        (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
-        copied_bytes,
-        copied_duration.as_secs_f32()
-    );
+   // println!(
+   //     "{}: rate MiB/sec = {} (copied {} bytes in {}s)",
+   //     stream_id,
+   //     (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
+   //     copied_bytes,
+   //     copied_duration.as_secs_f32()
+   // );
 
     Ok(())
 }
+
+// let mut config = rustls::ClientConfig::new();
+//     config.root_store.add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
+//
+//     let dns_name = webpki::DNSNameRef::try_from_ascii_str("google.com").unwrap();
+//     let mut sess = rustls::ClientSession::new(&Arc::new(config), dns_name);
+//     let mut sock = TcpStream::connect("google.com:443").unwrap();
+//     let mut tls = rustls::Stream::new(&mut sess, &mut sock);
+//     tls.write(concat!("GET / HTTP/1.1\r\n",
+//                       "Host: google.com\r\n",
+//                       "Connection: close\r\n",
+//                       "Accept-Encoding: identity\r\n",
+//                       "\r\n")
+//               .as_bytes())
+//         .unwrap();
+//     let ciphersuite = tls.sess.get_negotiated_ciphersuite().unwrap();
+//     writeln!(&mut std::io::stderr(), "Current ciphersuite: {:?}", ciphersuite.suite).unwrap();
+//     let mut plaintext = Vec::new();
+//     tls.read_to_end(&mut plaintext).unwrap();
+//     stdout().write_all(&plaintext).unwrap();
+
 
 // /// A data structure for all the elements of an HTTP request that are involved in
 // /// the Amazon Signature Version 4 signing process

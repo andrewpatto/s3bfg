@@ -9,7 +9,7 @@ use nix::fcntl::FallocateFlags;
 use std::os::unix::io::AsRawFd;
 
 #[cfg(target_os = "linux")]
-pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File, io::Error> {
+pub fn create_empty_target_file(write_filename: &str, size: u64) -> Result<File, io::Error> {
     // because we want to let fallocate do its best we want to always work on a new file (disabled)
     let file = OpenOptions::new()
         .write(true)
@@ -20,13 +20,13 @@ pub fn create_empty_target_file(write_filename: &str, size: i64) -> Result<File,
 
     // for linux we have the added ability to allocate the full size of the file
     // without any actual zero initialising
-    fallocate(fd, FallocateFlags::empty(), 0, size);
+    fallocate(fd, FallocateFlags::empty(), 0, size as u64);
 
     Ok(file)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn create_empty_target_file(write_filename: &str, _size: i64) -> Result<File, io::Error> {
+pub fn create_empty_target_file(write_filename: &str, _size: u64) -> Result<File, io::Error> {
     let file = OpenOptions::new()
         .write(true)
         .create(true)

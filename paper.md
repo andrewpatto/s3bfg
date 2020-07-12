@@ -35,6 +35,8 @@ Note we are deliberately not using the AWS S3 CLI at this point as it adds multi
 
 ### What about multiple connections?
 
+strace ~/s3bfg/target/release/s3bfg down s3://s3-benchmark-oregon/4mib /mnt/ --dns-desired-ips 1 --dns-concurrent 1 --sync-th
+reads 96 --fallocate -- >strace.out 2>&1
 
 
 

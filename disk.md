@@ -494,3 +494,31 @@ Disk stats (read/write):
   nvme1n1: ios=0/26381, merge=0/66541, ticks=0/376828, in_queue=326244, util=95.05%
   nvme4n1: ios=0/26271, merge=0/66651, ticks=0/1576628, in_queue=1524708, util=99.49%
 ```
+
+
+Usage: mkfs.xfs
+/* blocksize */[-b log=n|size=num]
+/* metadata */[-m crc=0|1,finobt=0|1,uuid=xxx]
+/* data subvol */[-d agcount=n,agsize=n,file,name=xxx,size=num,
+    (sunit=value,swidth=value|su=num,sw=num|noalign),
+    sectlog=n|sectsize=num
+/* force overwrite */[-f]
+/* inode size */[-i log=n|perblock=n|size=num,maxpct=n,attr=0|1|2,
+    projid32bit=0|1,sparse=0|1]
+/* no discard */[-K]
+/* log subvol */[-l agnum=n,internal,size=num,logdev=xxx,version=n
+    sunit=value|su=num,sectlog=n|sectsize=num,
+    lazy-count=0|1]
+/* label */[-L label (maximum 12 characters)]
+/* naming */[-n log=n|size=num,version=2|ci,ftype=0|1]
+/* no-op info only */[-N]
+/* prototype file */[-p fname]
+/* quiet */[-q]
+/* realtime subvol */[-r extsize=num,size=num,rtdev=xxx]
+/* sectorsize */[-s log=n|size=num]
+/* version */[-V]
+devicename
+<devicename> is required unless -d name=xxx is given.
+<num> is xxx (bytes), xxxs (sectors), xxxb (fs blocks), xxxk (xxx KiB),
+      xxxm (xxx MiB), xxxg (xxx GiB), xxxt (xxx TiB) or xxxp (xxx PiB).
+<value> is xxx (512 byte blocks).

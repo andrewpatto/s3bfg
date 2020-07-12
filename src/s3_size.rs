@@ -23,7 +23,7 @@ use rusoto_core::signature::{Params, SignedRequest};
 
 /// Returns the size in bytes and real region of the S3 file that has been specified in `cfg`.
 ///
-pub fn find_file_size_and_correct_region_sync(cfg: &Config) -> (u64, Region) {
+pub fn find_file_size_and_correct_region_sync(cfg: &mut Config) -> (u64, Region) {
     // we don't know if the rest of our app is using rayon or with what setup -
     // for this purpose we just want a pretty standard one - as all we are doing
     // is a single HEAD request
@@ -34,7 +34,7 @@ pub fn find_file_size_and_correct_region_sync(cfg: &Config) -> (u64, Region) {
         .unwrap();
 
     return head_rt
-        .block_on(_find_file_size_and_correct_region(&cfg))
+        .block_on(_find_file_size_and_correct_region(cfg))
         .unwrap();
 }
 
@@ -42,7 +42,7 @@ pub fn find_file_size_and_correct_region_sync(cfg: &Config) -> (u64, Region) {
 ///
 /// Uses the standard S3 HEAD or GET object operation (at this point we are not yet
 /// optimising for speed)
-async fn _find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
+async fn _find_file_size_and_correct_region(cfg: &mut Config) -> Result<(u64, Region), io::Error> {
     // we start with a guess at the region of the S3 bucket and refine as we discover more
     let mut region_attempt = Region::default();
 
@@ -143,8 +143,11 @@ async fn _find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region
             continue;
         }
 
+        // write the value into config as well
+        cfg.file_size_bytes = head_result.unwrap().content_length.unwrap() as u64;
+
         return Ok((
-            head_result.unwrap().content_length.unwrap() as u64,
+            cfg.file_size_bytes,
             region_attempt.clone(),
         ));
     }

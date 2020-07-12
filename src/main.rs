@@ -15,6 +15,8 @@ use rusoto_credential::{
     ProvideAwsCredentials,
 };
 use tokio::runtime::Builder;
+use metrics_runtime::Receiver;
+use std::{thread, time::Duration};
 
 use crate::asynchronous::async_execute;
 use crate::config::Config;
@@ -32,13 +34,15 @@ mod empty_file;
 mod ips;
 mod s3_ip_pool;
 mod s3_size;
+mod s3_request_signed;
 mod synchronous;
+mod metrics_observer_ui;
 
 /// The big gun of S3 file copying.
 ///
 fn main() -> std::io::Result<()> {
     // parse cmd line
-    let config = Config::new();
+    let mut config = Config::new();
 
     if config.memory_only {
         println!(
@@ -61,7 +65,7 @@ fn main() -> std::io::Result<()> {
         config.s3_connections
     );
 
-    let (total_size_bytes, bucket_region) = find_file_size_and_correct_region_sync(&config);
+    let (total_size_bytes, bucket_region) = find_file_size_and_correct_region_sync(&mut config);
 
     println!("S3 details: bucket is in region {}", bucket_region.name());
 
@@ -168,6 +172,8 @@ fn main() -> std::io::Result<()> {
             });
         }
     }
+
+
 
     let transfer_started = Instant::now();
 
