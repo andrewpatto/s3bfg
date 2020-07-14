@@ -20,7 +20,7 @@ pub fn create_empty_target_file(write_filename: &str, size: u64) -> Result<File,
 
     // for linux we have the added ability to allocate the full size of the file
     // without any actual zero initialising
-    fallocate(fd, FallocateFlags::empty(), 0, size as u64);
+    fallocate(fd, FallocateFlags::empty(), 0, size as i64);
 
     Ok(file)
 }

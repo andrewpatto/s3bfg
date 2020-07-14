@@ -133,7 +133,8 @@ impl Drain<String> for UiObserver {
             self.tree.insert_values(levels, values);
         }
 
-        let rendered = String::from(serde_yaml::to_string(&self.tree).expect("failed to render yaml output"));
+        let rendered =
+            String::from(serde_yaml::to_string(&self.tree).expect("failed to render yaml output"));
         self.tree.clear();
         rendered
     }

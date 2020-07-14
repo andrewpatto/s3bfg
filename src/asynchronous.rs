@@ -20,15 +20,16 @@ use crate::metric_names::{
     METRIC_SLOT_TCP_SETUP,
 };
 use crate::metric_observer_progress::ProgressObserver;
+use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
-use metrics_core::{Observe, Builder, Drain};
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use metrics_core::{Builder, Drain, Observe};
 use metrics_runtime::{Receiver, Sink};
 use rusoto_core::Region;
 use rusoto_credential::AwsCredentials;
 use std::io::stdout;
 use tokio::runtime::Runtime;
-use crate::metric_observer_ui::UiBuilder;
 
 pub type BoxError = std::boxed::Box<
     dyn std::error::Error + std::marker::Send + std::marker::Sync, // needed for threads
@@ -112,17 +113,33 @@ pub fn async_execute(
             config.input_bucket_name, config.input_bucket_key
         );
 
-        tokio::task::spawn_blocking(move || loop {
-            let mut observer = ProgressObserver::new();
+        tokio::task::spawn_blocking(move || {
+            //let m = MultiProgress::new();
+            let sty = ProgressStyle::default_bar()
+                .template("\r{spinner:.green} [{elapsed_precise}] {bar:20.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}")
+                .progress_chars("#>-");
 
-            controller.observe(&mut observer);
+            let pb = ProgressBar::new(size);
+            pb.set_style(sty.clone());
 
-            let msg = observer.render(size, sink.now());
+            loop {
+                let mut observer = ProgressObserver::new();
 
-            print!("{}", msg);
-            std::io::stdout().flush();
+                controller.observe(&mut observer);
 
-            std::thread::sleep(Duration::from_secs(5));
+                let msg = observer.render(size, sink.now());
+
+                pb.set_message(msg.as_str());
+                pb.set_position(observer.transferred());
+
+                //print!("{}", msg);
+                //std::io::stdout().flush();
+                //m.join().unwrap();
+
+                std::thread::sleep(Duration::from_secs(1));
+            }
+            pb.finish_with_message("done");
+            // m.join_and_clear().unwrap();
         });
 
         // the current slot indicates which S3 connection slot we are making units of work for

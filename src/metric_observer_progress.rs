@@ -27,6 +27,10 @@ impl ProgressObserver {
         }
     }
 
+    pub fn transferred(&mut self) -> u64 {
+        return self.transferred;
+    }
+
     pub fn render(&mut self, size: u64, now: u64) -> String {
         let mut rates_display: String = String::new();
         {
@@ -39,10 +43,7 @@ impl ProgressObserver {
                 .filter_map(|histo| {
                     let (name, labels) = histo.0.clone().into_parts();
                     if name.ends_with(METRIC_SLOT_RATE_BYTES_PER_SEC) {
-                        return Some((
-                            name,
-                            histo.1.mean() / (1024.0 * 1024.0),
-                        ));
+                        return Some((name, histo.1.mean() / (1024.0 * 1024.0)));
                     } else {
                         return None;
                     }
@@ -72,7 +73,7 @@ impl ProgressObserver {
             avg_display = format!("-");
         }
 
-        return format!("\r{:3}% {:5} MiB/s {}", percent, avg_display, rates_display);
+        return rates_display;
     }
 }
 
