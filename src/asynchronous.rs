@@ -1,31 +1,45 @@
-use std::io;
 use std::io::Write;
-use std::net::ToSocketAddrs;
+use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::str;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-
-use futures::io::SeekFrom;
-use futures::prelude::*;
-use futures::stream::FuturesUnordered;
-use tokio::fs::OpenOptions;
-use tokio::io::{split, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::net::TcpStream;
-use tokio::runtime::{Builder, Runtime};
-use tokio_rustls::client::TlsStream;
-use tokio_rustls::{rustls::ClientConfig, webpki::DNSNameRef, TlsConnector};
+//use futures::prelude::*;
+//use tokio::prelude::*;
+//use tokio::io::*;
+//use tokio::future::*;
+use futures::stream::{FuturesUnordered, StreamExt as FuturesStreamExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+use tokio::stream::StreamExt as TokioStreamExt;
 
 use crate::config::Config;
 use crate::copy_exact::copy_exact;
 use crate::datatype::BlockToStream;
+use crate::metric_names::{
+    METRIC_OVERALL_TRANSFER_BYTES, METRIC_OVERALL_TRANSFER_STARTED, METRIC_SLOT_RATE_BYTES_PER_SEC,
+    METRIC_SLOT_REQUEST, METRIC_SLOT_RESPONSE, METRIC_SLOT_SSL_SETUP, METRIC_SLOT_STATE_SETUP,
+    METRIC_SLOT_TCP_SETUP,
+};
+use crate::metric_observer_progress::ProgressObserver;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
+use metrics_core::{Observe, Builder, Drain};
+use metrics_runtime::{Receiver, Sink};
+use rusoto_core::Region;
+use rusoto_credential::AwsCredentials;
+use std::io::stdout;
+use tokio::runtime::Runtime;
+use crate::metric_observer_ui::UiBuilder;
+
+pub type BoxError = std::boxed::Box<
+    dyn std::error::Error + std::marker::Send + std::marker::Sync, // needed for threads
+>;
 
 pub fn async_execute(
-    connection_tracker: &Arc<S3IpPool>,
+    s3_ip_pool: &Arc<S3IpPool>,
     blocks: &Vec<BlockToStream>,
     config: &Config,
-    bucket_region: &str,
+    credentials: &AwsCredentials,
+    bucket_region: &Region,
 ) {
     println!("Starting a tokio asynchronous copy");
 
@@ -36,14 +50,14 @@ pub fn async_execute(
     let mut rt_description: String = String::new();
 
     if config.asynchronous_basic {
-        rt = Builder::new()
+        rt = tokio::runtime::Builder::new()
             .enable_all()
             .basic_scheduler()
             .build()
             .unwrap();
         rt_description.push_str("basic");
     } else {
-        let mut temp = Builder::new();
+        let mut temp = tokio::runtime::Builder::new();
 
         temp.enable_all();
         temp.threaded_scheduler();
@@ -68,264 +82,257 @@ pub fn async_execute(
         rt = temp.build().unwrap();
     }
 
-    let ips_db = connection_tracker.ips.lock().unwrap();
-
-
-
-    let futures = FuturesUnordered::new();
-
-    {
-        let mut starter: usize = 0;
-
-        let connectors = if config.s3_connections < connection_tracker.ip_count() {
-            config.s3_connections as usize
-        } else {
-            ips_db.len()
-        };
-
-        let connection_chunk = blocks.len() / connectors;
-
-        for (count, (ip, _)) in ips_db.iter().enumerate() {
-            if count >= connectors {
-                break;
-            }
-
-            futures.push(async_execute_work(
-                &ip.as_str(),
-                &blocks[starter..starter + connection_chunk],
-                &config,
-                bucket_region,
-            ));
-
-            starter += connection_chunk;
-        }
-    }
-
-    //let all_done =
-    //    futures::stream::iter(futures.into_iter())
-    //        .buffer_unordered(16);
-
     println!(
-        "Tokio runtime is set up to operate with {} config, across {} potential S3 endpoints",
-        rt_description,
-        futures.len()
+        "Tokio runtime is set up to operate with {} config, utilising {} S3 connections",
+        rt_description, config.s3_connections
     );
 
-    println!("Using {} connections to S3", futures.len());
+    let mut overall_sink = config.receiver.sink();
 
-    // spawn a task waiting on all the async streams to finish
-    let res = rt.block_on(futures.into_future());
+    overall_sink.update_gauge(METRIC_OVERALL_TRANSFER_STARTED, overall_sink.now() as i64);
 
-    println!("err: {:?}", res);
+    let blocks_real: Vec<BlockToStream> = blocks.iter().cloned().collect();
+    let mut futs = FuturesUnordered::new();
+
+    let mut slots =
+        vec![SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 443); config.s3_connections as usize];
+
+    for slot in 0..config.s3_connections as usize {
+        let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
+        let socket_addr = SocketAddrV4::new(tcp_addr, 443);
+        slots[slot] = socket_addr;
+    }
+
+    rt.block_on(async {
+        let controller = config.receiver.controller();
+        let sink = config.receiver.sink();
+        let size = config.file_size_bytes;
+        let name = format!(
+            "s3://{}/{}",
+            config.input_bucket_name, config.input_bucket_key
+        );
+
+        tokio::task::spawn_blocking(move || loop {
+            let mut observer = ProgressObserver::new();
+
+            controller.observe(&mut observer);
+
+            let msg = observer.render(size, sink.now());
+
+            print!("{}", msg);
+            std::io::stdout().flush();
+
+            std::thread::sleep(Duration::from_secs(5));
+        });
+
+        // the current slot indicates which S3 connection slot we are making units of work for
+        let mut current_slot: usize = 0;
+
+        for b in blocks_real {
+            // get the S3 addr that this slot targets
+            let s3_addr = slots[current_slot];
+
+            // create the worker to work in this slot
+            let fut = async move {
+                let actual_work_future = async_execute_work(
+                    current_slot,
+                    s3_addr,
+                    b,
+                    config,
+                    credentials,
+                    bucket_region,
+                );
+
+                let finished_slot = actual_work_future.await.unwrap();
+
+                finished_slot
+            };
+
+            // this is only of relevance in the opening N iterations of the loop -
+            // after the future we 'wait' on will define the replacement current_slot
+            current_slot += 1;
+
+            futs.push(fut);
+
+            if futs.len() == config.s3_connections as usize {
+                // we have hit the limit of concurrency we are aiming for
+                // so we now await the finish of a worker
+                // the slot it returns is then open up for use
+                current_slot = futures::stream::StreamExt::next(&mut futs).await.unwrap();
+            }
+        }
+
+        // drain for remaining work from the queue
+        while let Some(item) = futures::stream::StreamExt::next(&mut futs).await {}
+    });
+
+    println!();
 
     rt.shutdown_timeout(Duration::from_millis(100));
+
+    let mut builder = UiBuilder::new();
+    let mut observer = builder.build();
+
+    config.receiver.controller().observe(&mut observer);
+
+    println!("{}", observer.drain());
 }
 
 pub async fn async_execute_work(
-    ip: &str,
-    blocks: &[BlockToStream],
+    slot: usize,
+    s3_socket_addr: SocketAddrV4,
+    block: BlockToStream,
     cfg: &Config,
-    bucket_region: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // because our start up is expensive we don't even want to go there will be nothing to do
-    if blocks.is_empty() {
-        return Ok(());
-    }
+    credentials: &AwsCredentials,
+    bucket_region: &Region,
+) -> std::result::Result<usize, BoxError> {
+    // the master sink is where we collate 'overall' stats
+    let mut overall_sink = cfg.receiver.sink();
 
-    // if we want to allocate single buffers then we need to know the max size we will face
-    let _longest = blocks.iter().max_by_key(|b| b.length).unwrap().length;
+    // our slot sink is used for per slot timings
+    let mut slot_sink = overall_sink.scoped(format!("{}", slot).as_str());
 
-    let s3_ip = (ip, 443)
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| io::Error::from(io::ErrorKind::NotFound))?;
+    let now_start = slot_sink.now();
 
-    // the underlying tcp stream for our connection to the designated S3 IP can be created first
-    let tcp_stream = TcpStream::connect(&s3_ip).await?;
+    //
+    // -- preamble section, setup everything that shouldn't require any io or blocking
+    //
 
-    // the TLS connector is the rusttls layer that will do the TLS handshake for us
-    let mut tls_config = ClientConfig::new();
+    let mut memory_buffer = vec![0u8; block.length as usize];
+    let mut http_reqest: Vec<u8> = Vec::with_capacity(1024);
+    let real_hostname = make_signed_get_range_request(
+        block.start,
+        block.length,
+        cfg,
+        credentials,
+        bucket_region,
+        &mut http_reqest,
+    )
+    .unwrap();
 
+    let mut tls_config = rustls::ClientConfig::new();
     tls_config
         .root_store
         .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS);
-    let connector = TlsConnector::from(Arc::new(tls_config));
+    //let tls_config_arc = ;
+    let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config));
+    let domain =
+        tokio_rustls::webpki::DNSNameRef::try_from_ascii_str(real_hostname.as_str()).unwrap();
 
-    let domain_str = format!(
-        "{}.s3-{}.amazonaws.com",
-        cfg.input_bucket_name, bucket_region
-    );
+    let now_setup = slot_sink.now();
 
-    let domain = DNSNameRef::try_from_ascii_str(domain_str.as_str())?;
-    //        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid dnsname"))?;
+    slot_sink.record_timing(METRIC_SLOT_STATE_SETUP, now_start, now_setup);
 
-    let stream: TlsStream<TcpStream> = connector.connect(domain, tcp_stream).await?;
+    //
+    // -- initial tcp stream connection
+    //
 
-    let (reader, mut writer) = split(stream);
+    let tcp_stream = tokio::net::TcpStream::connect(s3_socket_addr).await?;
 
-    let mut buf_reader = BufReader::new(reader);
+    let now_tcp_connected = slot_sink.now();
 
-    // we hope to make this memory buffer only once and then continually read into it
-    // (helps us make the zeroing out of the vector content a one off)
-    let mut memory_buffer = vec![0u8; _longest as usize];
+    slot_sink.record_timing(METRIC_SLOT_TCP_SETUP, now_setup, now_tcp_connected);
 
-    let mut c = 0;
+    //
+    // -- do SSL handshake and setup SSL stream
+    //
 
-    for b in blocks {
-        let block_started = Instant::now();
+    let mut stream = tls_connector.connect(domain, tcp_stream).await?;
 
-        let mut prelude: Vec<u8> = vec![];
+    let now_ssl_connected = slot_sink.now();
 
-        // let real_hostname = make_signed_get_range_request(read_start, read_length, cfg, credentials, bucket_region, &mut prelude).unwrap();
+    slot_sink.record_timing(METRIC_SLOT_SSL_SETUP, now_tcp_connected, now_ssl_connected);
 
+    let (reader, mut writer) = tokio::io::split(stream);
+    let mut buf_reader = tokio::io::BufReader::new(reader);
 
-        // build into a buffer so we can send in one go
-        let mut req: Vec<u8> = vec![];
+    writer.write_all(http_reqest.as_slice()).await?;
 
-        // request line
-        write!(req, "GET {} HTTP/1.1\r\n", cfg.input_bucket_key)?;
+    let now_request_sent = slot_sink.now();
 
-        // headers
-        write!(
-            req,
-            "Host: {}.s3-{}.amazonaws.com\r\n",
-            cfg.input_bucket_name, bucket_region
-        )?;
-        write!(req, "User-Agent: s3bfg\r\n")?;
-        write!(req, "Accept: */*\r\n")?;
-        write!(
-            req,
-            "Range: bytes={}-{}\r\n",
-            b.start,
-            b.start + b.length - 1
-        )?;
+    slot_sink.record_timing(METRIC_SLOT_REQUEST, now_ssl_connected, now_request_sent);
 
-        // end of headers
-        write!(req, "\r\n")?;
+    loop {
+        let mut headers = String::new();
 
-        writer.write_all(req.as_slice()).await?;
+        let line_length = buf_reader.read_line(&mut headers).await?;
 
-        loop {
-            let mut headers = String::new();
-            let line_length = buf_reader.read_line(&mut headers).await?;
+        // TODO: should detect if the server returns Connection: closed in which case this is our last possible get
 
-            // TODO: should detect if the server returns Connection: closed in which case this is our last possible get
+        // otherwise we get this - when we come around *after* the close
+        if line_length == 0 {
+            let err = std::io::Error::new(std::io::ErrorKind::InvalidInput, "connection closed");
 
-            // otherwise we get this - when we come around *after* the close
-            if line_length == 0 {
-                return Result::Err(Box::from(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "connection closed",
-                )));
-            }
-
-            //print!("{}", headers);
-
-            // our headers will be terminated by a single line "\r\n"
-            if line_length == 2 {
-                break;
-            }
+            return std::result::Result::Err(Box::new(err));
         }
 
-        let copied_bytes: u64;
+        // print!("{}", headers);
 
-        if cfg.memory_only {
-            if b.length != memory_buffer.len() as u64 {
-                memory_buffer.resize(b.length as usize, 0);
-            }
-
-            copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;
-        } else {
-            let mut file_writer = OpenOptions::new()
-                .write(true)
-                .create(false)
-                .open(&cfg.output_write_filename.as_ref().unwrap())
-                .await?;
-
-            file_writer.seek(SeekFrom::Start(b.start)).await?;
-
-            let copied_stats = copy_exact(&mut buf_reader, &mut file_writer, b.length).await?;
-
-            copied_bytes = copied_stats.0;
+        // our headers will be terminated by a single line "\r\n"
+        if line_length == 2 {
+            break;
         }
-
-        assert_eq!(copied_bytes, b.length);
-
-        let block_duration = Instant::now().duration_since(block_started);
-
-        println!(
-            "{}-{}: {} in {} at {} MiB/s",
-            ip,
-            c,
-            copied_bytes,
-            block_duration.as_secs_f32(),
-            (copied_bytes as f32 / (1024.0 * 1024.0)) / block_duration.as_secs_f32()
-        );
-
-        c += 1;
     }
 
-    /*   let content = format!(
-             "GET / HTTP/1.0\r\nHost: {}\r\n\r\n",
-             "gos-test-cases-public.s3.ap-southeast-2.amazonaws.com"
-         );
+    let now_response_headers_received = slot_sink.now();
 
+    let copied_bytes: u64;
 
+    if cfg.memory_only {
+        copied_bytes = buf_reader.read_exact(&mut memory_buffer).await? as u64;
 
+        // record that we have transferred bytes (even though we haven't written them to disk)
+        overall_sink.increment_counter(METRIC_OVERALL_TRANSFER_BYTES, copied_bytes);
+    } else {
+        let mut oo = std::fs::OpenOptions::new();
+        oo.write(true);
+        oo.create(false);
 
+        let mut file_writer = tokio::fs::OpenOptions::from(oo)
+            .open(cfg.output_write_filename.as_ref().unwrap())
+            .await?;
 
-         let (mut stdin, mut stdout) = (tokio_stdin(), tokio_stdout());
+        file_writer
+            .seek(std::io::SeekFrom::Start(block.start))
+            .await?;
 
+        // note that copy_exact is responsible for generating some metrics via the passed
+        // in sink (including the overall bytes transferred counter)
+        copied_bytes = copy_exact(
+            overall_sink,
+            &mut buf_reader,
+            &mut file_writer,
+            block.length,
+        )
+        .await?;
 
+        file_writer.flush();
+    }
 
-         stream.write_all(content.as_bytes()).await?;
+    let now_response_received = slot_sink.now();
 
-         let (mut reader, mut writer) = split(stream);
+    slot_sink.record_timing(
+        METRIC_SLOT_RESPONSE,
+        now_request_sent,
+        now_response_received,
+    );
 
-            future::select(
-                 copy(&mut reader, &mut stdout),
-                 copy(&mut stdin, &mut writer)
-             )
-                 .await
-                 .factor_first()
-                 .0?;
+    assert_eq!(copied_bytes, block.length);
 
+    let elapsed_seconds = (now_response_received - now_start) as f64 / (1000.0 * 1000.0 * 1000.0);
 
+    if elapsed_seconds > 0.0 {
+        let bytes_per_sec = copied_bytes as f64 / elapsed_seconds;
 
+        slot_sink.record_value(METRIC_SLOT_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
+    }
 
-       let https = HttpsConnector::new();
-       let client = Client::builder().build::<_, hyper::Body>(https);
-
-       let res = client.get("https://gos-test-cases-public.s3.ap-southeast-2.amazonaws.com/GIB1_8398.bam".parse()?).await?;
-
-       println!("{:?}", res.status());
-       println!("{:?}", res.headers());
-    */
-    // assert_eq!(res.status(), 200);
-
-    Ok(())
-
-    /*  let fetches = futures::stream::iter(
-        blocks.into_iter().map(|block| {
-            async move {
-                match reqwest::get(&path).await {
-                    Ok(resp) => {
-                        match resp.text().await {
-                            Ok(text) => {
-                                println!("RESPONSE: {} bytes from {}", text.len(), path);
-                            }
-                            Err(_) => println!("ERROR reading {}", path),
-                        }
-                    }
-                    Err(_) => println!("ERROR downloading {}", path),
-                }
-            }
-        })
-    ).buffer_unordered(8).collect::<Vec<()>>();
-
-    println!("Waiting...");
-
-    fetches.await;
-
-    println!("got {:?}", res); */
+    Ok(slot)
 }
+
+// async-std
+//let connector = TlsConnector::default();
+//let tcp_stream = async_std::net::TcpStream::connect(&sa).await?;
+//let mut tls_stream = connector.connect(&real_hostname, tcp_stream).await?;
+//let (mut reader, mut writer) = &mut (&tls_stream, &tls_stream);
+//let mut buf_reader = async_std::io::BufReader::new(reader);

@@ -40,21 +40,12 @@
 //! ```
 //!
 #![deny(missing_docs)]
+use crate::config::Config;
 use hdrhistogram::Histogram;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
 use metrics_util::{parse_quantiles, MetricsTree, Quantile};
 use std::collections::HashMap;
 use std::io;
-use termion::{input::MouseTerminal, raw::IntoRawMode, screen::AlternateScreen};
-use tui::{
-    backend::TermionBackend,
-    layout::{Constraint, Direction, Layout},
-    style::{Color, Modifier, Style},
-    widgets::{BarChart, Block, Borders},
-    Terminal,
-};
-use tui::widgets::Gauge;
-use crate::config::Config;
 
 /// Builder for [`YamlObserver`].
 pub struct UiBuilder {
@@ -62,7 +53,6 @@ pub struct UiBuilder {
 }
 
 impl UiBuilder {
-
     /// Creates a new [`UiBuilder`] with default values.
     pub fn new() -> Self {
         let quantiles = parse_quantiles(&[0.0, 0.5, 0.9, 1.0]);
@@ -90,7 +80,7 @@ impl Builder for UiBuilder {
             quantiles: self.quantiles.clone(),
             tree: MetricsTree::default(),
             histos: HashMap::new(),
-            transferred: 0
+            transferred: 0,
         }
     }
 }
@@ -110,82 +100,10 @@ pub struct UiObserver {
     transferred: u64,
 }
 
-impl UiObserver {
-    pub fn render(&mut self, config: &Config) {
-        for (key, h) in self.histos.drain() {
-            let (levels, name) = key_to_parts(key);
-            let values = hist_to_values(name, h.clone(), &self.quantiles);
-            println!("{:?}", values);
-            self.tree.insert_values(levels, values);
-        }
-
-        let data = vec![
-            ("B1", 9),
-            ("B2", 12),
-            ("B3", 5),
-            ("B4", 8),
-            ("B5", 2),
-            ("B6", 4),
-            ("B7", 5),
-            ("B8", 9),
-            ("B9", 14),
-            ("B10", 15),
-            ("B11", 1),
-            ("B12", 0),
-            ("B13", 4),
-            ("B14", 6),
-            ("B15", 4),
-            ("B16", 6),
-            ("B17", 4),
-            ("B18", 7),
-            ("B19", 13),
-            ("B20", 8),
-            ("B21", 11),
-            ("B22", 9),
-            ("B23", 3),
-            ("B24", 5),
-        ];
-
-        //let stdout = io::stdout().into_raw_mode().unwrap();
-        let stdout = AlternateScreen::from(io::stdout());
-        let backend = TermionBackend::new(stdout);
-        let mut terminal = Terminal::new(backend).unwrap();
-
-        terminal.draw(|mut f| {
-            let chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .margin(2)
-                .constraints([Constraint::Percentage(50), Constraint::Percentage(50)].as_ref())
-                .split(f.size());
-            let barchart = BarChart::default()
-                .block(Block::default().title("Data1").borders(Borders::ALL))
-                .data(&data)
-                .bar_width(9)
-                .style(Style::default().fg(Color::Yellow))
-                .value_style(Style::default().fg(Color::Black).bg(Color::Yellow));
-            f.render_widget(barchart, chunks[0]);
-
-            let progress = Gauge::default()
-                .block(Block::default().title("Gauge1").borders(Borders::ALL))
-                .style(Style::default().fg(Color::Yellow))
-                .ratio((self.transferred as f64) / (config.file_size_bytes as f64));
-
-
-            f.render_widget(progress, chunks[1]);
-        });
-
-        self.tree.clear();
-    }
-}
-
 impl Observer for UiObserver {
-
     fn observe_counter(&mut self, key: Key, value: u64) {
         let (levels, name) = key_to_parts(key);
-
-        if name == "bytes_transferred" {
-            self.transferred = value;
-        }
+        self.tree.insert_value(levels, name, value);
     }
 
     fn observe_gauge(&mut self, key: Key, value: i64) {
@@ -215,7 +133,7 @@ impl Drain<String> for UiObserver {
             self.tree.insert_values(levels, values);
         }
 
-        let rendered = String::from("hi"); // serde_yaml::to_string(&self.tree).expect("failed to render yaml output");
+        let rendered = String::from(serde_yaml::to_string(&self.tree).expect("failed to render yaml output"));
         self.tree.clear();
         rendered
     }

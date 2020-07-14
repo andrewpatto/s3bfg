@@ -1,3 +1,9 @@
+use crate::config::Config;
+use regex::Regex;
+use rusoto_core::signature::SignedRequest;
+use rusoto_core::Region;
+use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
+use std::convert::TryInto;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io;
@@ -6,12 +12,6 @@ use std::io::{BufReader, Cursor};
 use std::net::{IpAddr, SocketAddr, TcpStream};
 use std::str;
 use std::str::from_utf8;
-use crate::config::Config;
-use rusoto_core::signature::SignedRequest;
-use rusoto_core::Region;
-use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
-use std::convert::TryInto;
-use regex::Regex;
 
 pub fn make_signed_get_range_request(
     read_start: u64,
@@ -19,9 +19,8 @@ pub fn make_signed_get_range_request(
     cfg: &Config,
     credentials: &AwsCredentials,
     bucket_region: &Region,
-    request_to_be_written: &mut Vec<u8>
+    request_to_be_written: &mut Vec<u8>,
 ) -> Result<String, Box<dyn Error>> {
-
     // sets up the standard rusoto signed request for S3 GET
     // (though we are about to use it in a non-standard way)
     let mut aws_request = SignedRequest::new(
@@ -44,9 +43,18 @@ pub fn make_signed_get_range_request(
     aws_request.sign(credentials);
 
     // write into the given buffer so we can send it one operation later
-    write!(request_to_be_written, "GET {} HTTP/1.1\n", aws_request.path())?;
+    write!(
+        request_to_be_written,
+        "GET {} HTTP/1.1\n",
+        aws_request.path()
+    )?;
     for (k, v) in aws_request.headers() {
-        write!(request_to_be_written, "{}: {}\n", k, from_utf8(v[0].as_ref()).unwrap())?;
+        write!(
+            request_to_be_written,
+            "{}: {}\n",
+            k,
+            from_utf8(v[0].as_ref()).unwrap()
+        )?;
     }
     // whilst this may be too pessimistic - for the moment it guarantees our read() will
     // only get data for our request

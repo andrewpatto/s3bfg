@@ -2,12 +2,18 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use crate::metric_names::{
+    METRIC_OVERALL_DISK_WRITE_OP_SIZE, METRIC_OVERALL_NETWORK_READ_OP_SIZE,
+    METRIC_OVERALL_TRANSFER_BYTES,
+};
 use futures::{ready, Future};
+use metrics_runtime::Sink;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 #[derive(Debug)]
 #[must_use = "futures do nothing unless you `.await` or poll them"]
 pub struct CopyExact<'a, R: ?Sized, W: ?Sized> {
+    sink: Sink,
     reader: &'a mut R,
     writer: &'a mut W,
     pos: usize,
@@ -15,29 +21,27 @@ pub struct CopyExact<'a, R: ?Sized, W: ?Sized> {
     amt: u64,
     expected: u64,
     buf: Box<[u8]>,
-    readn_total: usize,
-    readn_count: usize,
-    writen_total: usize,
-    writen_count: usize,
 }
 
-pub fn copy_exact<'a, R, W>(reader: &'a mut R, writer: &'a mut W, exact: u64) -> CopyExact<'a, R, W>
+pub fn copy_exact<'a, R, W>(
+    sink: Sink,
+    reader: &'a mut R,
+    writer: &'a mut W,
+    exact: u64,
+) -> CopyExact<'a, R, W>
 where
     R: AsyncRead + Unpin + ?Sized,
     W: AsyncWrite + Unpin + ?Sized,
 {
     CopyExact {
+        sink,
         reader,
         writer,
         amt: 0,
         expected: exact,
         pos: 0,
         cap: 0,
-        buf: Box::new([0; 65536]),
-        readn_total: 0,
-        readn_count: 0,
-        writen_total: 0,
-        writen_count: 0,
+        buf: Box::new([0u8; 65536]),
     }
 }
 
@@ -46,15 +50,12 @@ where
     R: AsyncRead + Unpin + ?Sized,
     W: AsyncWrite + Unpin + ?Sized,
 {
-    type Output = io::Result<(u64, usize, usize)>;
+    type Output = io::Result<u64>;
 
-    fn poll(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<io::Result<(u64, usize, usize)>> {
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
         loop {
-            // If our buffer is empty, then we need to read some data to
-            // continue.
+            // if our buffer is empty, then we need to read some data to
+            // continue - but making sure not to read any more than is expected
             if self.pos == self.cap && self.amt < self.expected {
                 let me = &mut *self;
                 let n = ready!(Pin::new(&mut *me.reader).poll_read(cx, &mut me.buf))?;
@@ -67,8 +68,8 @@ where
                     self.pos = 0;
                     self.cap = n;
 
-                    self.readn_total += n;
-                    self.readn_count += 1;
+                    self.sink
+                        .record_value(METRIC_OVERALL_NETWORK_READ_OP_SIZE, n as u64);
                 }
             }
 
@@ -85,8 +86,11 @@ where
                     self.pos += i;
                     self.amt += i as u64;
 
-                    self.writen_total += i;
-                    self.writen_count += 1;
+                    self.sink
+                        .record_value(METRIC_OVERALL_DISK_WRITE_OP_SIZE, i as u64);
+
+                    self.sink
+                        .increment_counter(METRIC_OVERALL_TRANSFER_BYTES, i as u64);
                 }
             }
 
@@ -97,11 +101,7 @@ where
                 let me = &mut *self;
                 ready!(Pin::new(&mut *me.writer).poll_flush(cx))?;
 
-                return Poll::Ready(Ok((
-                    self.amt,
-                    self.readn_total / self.readn_count,
-                    self.writen_total / self.writen_count,
-                )));
+                return Poll::Ready(Ok(self.amt));
             }
         }
     }

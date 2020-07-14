@@ -1,4 +1,5 @@
 use clap::{self, App, AppSettings, Arg, ArgMatches};
+use metrics_runtime::Receiver;
 use regex::Regex;
 use std::fs::metadata;
 use std::path::Path;
@@ -27,6 +28,9 @@ pub struct Config {
 
     pub s3_connections: u16,
 
+    // choice between the synchronous implementation of the async one
+    pub synchronous: bool,
+
     // settings for the synchronous Rayon thread pool
     pub synchronous_threads: u16,
 
@@ -39,9 +43,10 @@ pub struct Config {
     pub segment_size_bytes: u64,
 
     pub fallocate: bool,
-    pub asynchronous: bool,
 
     pub instance_type: String,
+
+    pub receiver: Receiver,
 }
 
 const S3_ARG: &str = "s3uri";
@@ -173,10 +178,10 @@ impl Config {
                 .long("basic")
                 .global(true)
                 .about("If specified tells us to use basic tokio runtime rather than threaded"))
-            .arg(Arg::with_name("async")
-                .long("async")
+            .arg(Arg::with_name("sync")
+                .long("sync")
                 .global(true)
-                .about("If specified tells us to use async code rather than sync"))
+                .about("If specified tells us to use sync code rather than async"))
             .arg(Arg::with_name("not-ec2")
                 .long("not-ec2")
                 .global(true)
@@ -275,9 +280,14 @@ impl Config {
                     * 1024,
 
                 fallocate: matches.is_present("fallocate"),
-                asynchronous: matches.is_present("async"),
+                synchronous: matches.is_present("sync"),
 
                 instance_type: aws_instance_type,
+
+                receiver: Receiver::builder()
+                    .histogram(Duration::from_secs(60 * 60), Duration::from_secs(60))
+                    .build()
+                    .expect("failed to create receiver"),
             };
         }
 

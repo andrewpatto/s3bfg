@@ -10,13 +10,13 @@ use std::time::Instant;
 
 use futures::future::join_all;
 use humansize::{file_size_opts as options, FileSize};
+use metrics_runtime::Receiver;
 use rusoto_credential::{
     AwsCredentials, ChainProvider, DefaultCredentialsProvider, ProfileProvider,
     ProvideAwsCredentials,
 };
-use tokio::runtime::Builder;
-use metrics_runtime::Receiver;
 use std::{thread, time::Duration};
+use tokio::runtime::Builder;
 
 use crate::asynchronous::async_execute;
 use crate::config::Config;
@@ -32,11 +32,13 @@ mod copy_exact;
 mod datatype;
 mod empty_file;
 mod ips;
+mod metric_names;
+mod metric_observer_progress;
+mod metric_observer_ui;
 mod s3_ip_pool;
-mod s3_size;
 mod s3_request_signed;
+mod s3_size;
 mod synchronous;
-mod metrics_observer_ui;
 
 /// The big gun of S3 file copying.
 ///
@@ -173,11 +175,9 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-
-
     let transfer_started = Instant::now();
 
-    if !config.asynchronous {
+    if config.synchronous {
         sync_execute(
             &connection_tracker,
             &blocks,
@@ -190,7 +190,8 @@ fn main() -> std::io::Result<()> {
             &connection_tracker,
             &blocks,
             &config,
-            bucket_region.name().as_ref(),
+            &creds,
+            &bucket_region,
         );
     }
 

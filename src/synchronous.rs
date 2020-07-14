@@ -1,38 +1,34 @@
-
-
-use native_tls::TlsConnector;
-use rayon::prelude::*;
+use crate::config::Config;
+use crate::datatype::BlockToStream;
+use crate::metric_names::THREAD_LABELS;
+use crate::metric_observer_ui::UiBuilder;
+use crate::s3_ip_pool::S3IpPool;
+use crate::s3_request_signed::make_signed_get_range_request;
 use log::Level;
+use metrics_core::{Builder, Drain, Label, Observe, Observer};
+use metrics_runtime::Controller;
+use metrics_runtime::{exporters::LogExporter, observers::YamlBuilder, Receiver};
+use rayon::prelude::*;
+use regex::Regex;
+use rusoto_core::signature::SignedRequest;
+use rusoto_core::Region;
+use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
+use rustls;
+use rustls::Session;
+use socket2::{Domain, SockAddr, Socket, Type};
+use std::convert::TryInto;
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io;
 use std::io::prelude::*;
 use std::io::{BufReader, Cursor};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::os::unix::prelude::FileExt;
 use std::str;
 use std::str::from_utf8;
 use std::sync::Arc;
-use std::time::{Instant, Duration};
-use crate::config::Config;
-use crate::datatype::BlockToStream;
-use crate::s3_ip_pool::S3IpPool;
-use rusoto_core::signature::SignedRequest;
-use rusoto_core::Region;
-use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
-use std::convert::TryInto;
-use regex::Regex;
-use socket2::{Socket, Domain, Type, SockAddr};
-use rustls;
-use rustls::Session;
-use std::thread::{spawn, sleep};
-use metrics_core::{Builder, Drain, Observe, Observer, Label};
-use metrics_runtime::Controller;
-use metrics_runtime::{
-    Receiver, observers::YamlBuilder, exporters::LogExporter,
-};
-use crate::metrics_observer_ui::UiBuilder;
-use crate::s3_request_signed::make_signed_get_range_request;
+use std::thread::{sleep, spawn};
+use std::time::{Duration, Instant};
 
 // use nix::fcntl::OFlag;
 // const O_DIRECT: i32 = 0x4000;
@@ -56,8 +52,6 @@ pub fn sync_execute(
         .unwrap();
 
     println!("Rayon thread pool is set up to operate with {} executions in parallel, across {} potential S3 endpoints", pool.current_num_threads(), s3_ip_pool.ip_count());
-
-
 
     pool.install( || {
        // spawn(|| {
@@ -123,7 +117,7 @@ pub fn sync_execute(
 
         receiver.controller().observe(&mut observer);
 
-        observer.render(config);
+        observer.drain();
     });
 
     let ips = s3_ip_pool.ips.lock().unwrap();
@@ -136,26 +130,12 @@ pub fn sync_execute(
     }
 }
 
-// I own up - I don't really understand the correct way to do lifetimes in Rust!
-// It makes sense that metrics wants it labels to be `static - but not sure how
-// I can do that without literally instantiated like this
-const THREAD_LABELS: & [& str] = &[
-    "thread0",
-    "thread1",
-    "thread2",
-    "thread3",
-    "thread4",
-    "thread5",
-    "thread6",
-    "thread7",
-];
-
 /// Streams a portion of an S3 object from network to disk.
 ///
 fn sync_stream_range_from_s3(
     receiver: &Receiver,
     thread_index: usize,
-    tcp_host_addr: IpAddr,
+    tcp_host_addr: Ipv4Addr,
     read_start: u64,
     read_length: u64,
     write_location: u64,
@@ -163,7 +143,6 @@ fn sync_stream_range_from_s3(
     credentials: &AwsCredentials,
     bucket_region: &Region,
 ) -> Result<(), Box<dyn Error>> {
-
     // our sink allows us to record performance metrics
     let mut root_sink = receiver.sink();
 
@@ -174,10 +153,9 @@ fn sync_stream_range_from_s3(
     // these are all our benchmark points - set initially to be the starting time
     let now_started = sink.now();
 
-
     // println!("{:?}", aws_request);
     let socket = Socket::new(Domain::ipv4(), Type::stream(), None).unwrap();
-    let socket_dest: SockAddr = SocketAddr::new(tcp_host_addr, 443).into();
+    let socket_dest: SockAddr = SocketAddrV4::new(tcp_host_addr, 443).into();
 
     // disable Nagle as we know we are just sending the whole request in one packet
     socket.set_nodelay(true)?;
@@ -187,21 +165,26 @@ fn sync_stream_range_from_s3(
     socket.connect(&socket_dest)?;
 
     let tcp_stream = socket.into_tcp_stream();
-        //TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
+    //TcpStream::connect(SocketAddr::new(tcp_host_addr, 443))?;
 
-    let connector = TlsConnector::new().unwrap();
+    //let connector = TlsConnector::new().unwrap();
 
     let mut prelude: Vec<u8> = vec![];
-    let real_hostname = make_signed_get_range_request(read_start, read_length, cfg, credentials, bucket_region, &mut prelude).unwrap();
-
+    let real_hostname = make_signed_get_range_request(
+        read_start,
+        read_length,
+        cfg,
+        credentials,
+        bucket_region,
+        &mut prelude,
+    )
+    .unwrap();
 
     // we need to use the 'real' name of the host in the SSL setup - even though the IP address
     // we are using is from a pool
-    let mut ssl_stream = connector.connect(real_hostname.as_str(), tcp_stream)?;
+    let mut ssl_stream = tcp_stream; // connector.connect(real_hostname.as_str(), tcp_stream)?;
 
     let now_ssl_connected = sink.now();
-
-
 
     // if debugging
     // println!("{}", from_utf8(&prelude).unwrap());
@@ -220,10 +203,7 @@ fn sync_stream_range_from_s3(
 
         reader.read_line(&mut status_line)?;
 
-
-        let status_regex = Regex::new(
-            r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##,
-        ).unwrap();
+        let status_regex = Regex::new(r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##).unwrap();
 
         let status_parse_result = status_regex.captures(status_line.as_str());
 
@@ -262,9 +242,13 @@ fn sync_stream_range_from_s3(
 
     let now_http_data_read = sink.now();
 
-    sink.record_timing("http_block_data_transfer", now_http_status_response, now_http_data_read);
+    sink.record_timing(
+        "http_block_data_transfer",
+        now_http_status_response,
+        now_http_data_read,
+    );
 
-    reader.into_inner().shutdown()?;
+    // reader.into_inner().shutdown()?;
 
     // we can either just write into a memory buffer we then throw away
     // or onto a disk.. memory only allows benchmarking of networking without
@@ -285,7 +269,11 @@ fn sync_stream_range_from_s3(
 
     let now_data_written = sink.now();
 
-    sink.record_timing(format!("stream_block_{}", read_length ), now_started, now_data_written);
+    sink.record_timing(
+        format!("stream_block_{}", read_length),
+        now_started,
+        now_data_written,
+    );
 
     let nano_taken = now_data_written - now_started;
     let bytes_rate = copied_bytes * 1000 * 1000 / nano_taken;
@@ -299,13 +287,13 @@ fn sync_stream_range_from_s3(
 
     assert_eq!(copied_bytes, read_length);
 
-   // println!(
-   //     "{}: rate MiB/sec = {} (copied {} bytes in {}s)",
-   //     stream_id,
-   //     (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
-   //     copied_bytes,
-   //     copied_duration.as_secs_f32()
-   // );
+    // println!(
+    //     "{}: rate MiB/sec = {} (copied {} bytes in {}s)",
+    //     stream_id,
+    //     (copied_bytes as f32 / (1024.0 * 1024.0)) / copied_duration.as_secs_f32(),
+    //     copied_bytes,
+    //     copied_duration.as_secs_f32()
+    // );
 
     Ok(())
 }
@@ -329,7 +317,6 @@ fn sync_stream_range_from_s3(
 //     let mut plaintext = Vec::new();
 //     tls.read_to_end(&mut plaintext).unwrap();
 //     stdout().write_all(&plaintext).unwrap();
-
 
 // /// A data structure for all the elements of an HTTP request that are involved in
 // /// the Amazon Signature Version 4 signing process

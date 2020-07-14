@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::iter;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread::sleep;
@@ -50,7 +50,7 @@ impl S3IpPool {
     /// Returns an IP address from our pool that has been used the least, and the
     /// current count for that IP address.
     ///
-    pub fn use_least_used_ip(&self) -> (IpAddr, u32) {
+    pub fn use_least_used_ip(&self) -> (Ipv4Addr, u32) {
         let mut ips_unmutex = self.ips.lock().unwrap();
 
         // our S3 endpoint with the lowest usage so far
@@ -60,9 +60,9 @@ impl S3IpPool {
         let (ip, count) = lowest_usage.unwrap();
 
         // bump the count
-        *count = *count + 1;
+        *count += 1;
 
-        return (ip.parse::<IpAddr>().unwrap(), *count);
+        return (ip.parse::<Ipv4Addr>().unwrap(), *count);
     }
 
     /// Populates the pool with entries we fetch in parallel from a DNS server and
@@ -77,8 +77,8 @@ impl S3IpPool {
         concurrency: u16,
         round_delay: Duration,
     ) -> u16 {
-        // we use tokio for this bit because the DNS lookup library that used
-        // tokio gave the most control
+        // we use tokio for this bit because the DNS lookup library that uses
+        // tokio gave the most control over timeouts etc
         let mut dns_rt = Builder::new()
             .enable_all()
             .threaded_scheduler()
@@ -163,7 +163,7 @@ impl S3IpPool {
                 for ans in answers {
                     // where the answer fits into the A data structure
                     // we see if this is a new IP and if so, add it
-                    if let &RData::A(ref ip) = ans.rdata() {
+                    if let RData::A(ref ip) = ans.rdata() {
                         if !ips.contains_key(&ip.to_string()) {
                             ips.insert(ip.to_string(), 0);
                             added_count += 1;

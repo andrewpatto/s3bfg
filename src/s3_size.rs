@@ -146,10 +146,7 @@ async fn _find_file_size_and_correct_region(cfg: &mut Config) -> Result<(u64, Re
         // write the value into config as well
         cfg.file_size_bytes = head_result.unwrap().content_length.unwrap() as u64;
 
-        return Ok((
-            cfg.file_size_bytes,
-            region_attempt.clone(),
-        ));
+        return Ok((cfg.file_size_bytes, region_attempt.clone()));
     }
 
     /*let cred_provider =  DefaultCredentialsProvider::new().unwrap();
