@@ -16,17 +16,9 @@ jobs:
 
     steps:
     - uses: actions/checkout@v2
+
     - name: Build
       run: cargo build --verbose
-    - name: Build
-      run: cargo build --release
+
     - name: Run tests
       run: cargo test --verbose
-    - uses: actions/upload-artifact@v2
-      with:
-        name: s3bfg-debug
-        path: target/debug/s3bfg
-    - uses: actions/upload-artifact@v2
-      with:
-        name: s3bfg
-        path: target/release/s3bfg
