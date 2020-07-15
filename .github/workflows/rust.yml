@@ -17,8 +17,15 @@ jobs:
     steps:
     - uses: actions/checkout@v2
 
+    - name: Build MUSL
+      uses: NSCoder/rust-musl-action@v1.0.0
+      env:
+        BUILD_TARGET: x86_64-unknown-linux-musl
+      args: "cargo build --target $BUILD_TARGET --release"
+
     - name: Build
       run: cargo build --verbose
+
 
     - name: Run tests
       run: cargo test --verbose
