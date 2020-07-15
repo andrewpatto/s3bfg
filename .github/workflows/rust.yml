@@ -21,7 +21,8 @@ jobs:
       uses: NSCoder/rust-musl-action@v1.0.0
       env:
         BUILD_TARGET: x86_64-unknown-linux-musl
-      args: "cargo build --target $BUILD_TARGET --release"
+      with:
+        args: "cargo build --target $BUILD_TARGET --release"
 
     - name: Build
       run: cargo build --verbose
