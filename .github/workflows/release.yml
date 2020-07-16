@@ -18,15 +18,15 @@ jobs:
         include:
           - os: ubuntu-20.04
             musl: true
-            artifact_name: s3bfg
+            target_folder: .
             asset_name: s3bfg-linux-amd64
           - os: ubuntu-18.04
             musl: false
-            artifact_name: s3bfg
+            target_folder: ./x86_64-unknown-linux-musl
             asset_name: s3bfg-linux-musl
           - os: macos-latest
             musl: false
-            artifact_name: s3bfg
+            target_folder: .
             asset_name: s3bfg-macos-amd64
 
     steps:
@@ -34,6 +34,9 @@ jobs:
 
     - name: Put the Release Version into Environment
       run: echo ::set-env name=RELEASE_VERSION::${GITHUB_REF#refs/*/}
+
+    - name: Set the Release Version in the Cargo.toml
+      run: sed -i -e 's/^version = .*/version = "${RELEASE_VERSION}"/' Cargo.toml
 
     - name: Build (regular)
       if: ${{ ! matrix.musl }}
@@ -52,6 +55,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       with:
         upload_url: ${{ github.event.release.upload_url }}
-        asset_path: target/release/${{ matrix.artifact_name }}
+        asset_path: ${{ matrix.target_folder }}/release/s3bfg
         asset_name: ${{ matrix.asset_name }}-${{ env.RELEASE_VERSION }}
         asset_content_type: application/octet-stream
