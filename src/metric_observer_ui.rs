@@ -44,8 +44,10 @@ use crate::config::Config;
 use hdrhistogram::Histogram;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
 use metrics_util::{parse_quantiles, MetricsTree, Quantile};
-use std::collections::HashMap;
+use std::collections::{HashMap, BTreeMap};
 use std::io;
+use humantime::format_duration;
+use std::cmp::Ordering;
 
 /// Builder for [`YamlObserver`].
 pub struct UiBuilder {
@@ -125,16 +127,28 @@ impl Observer for UiObserver {
     }
 }
 
+use ordered_float::OrderedFloat;
+
 impl Drain<String> for UiObserver {
     fn drain(&mut self) -> String {
-        for (key, h) in self.histos.drain() {
-            let (levels, name) = key_to_parts(key);
-            let values = hist_to_values(name, h.clone(), &self.quantiles);
-            self.tree.insert_values(levels, values);
+        let mut map = BTreeMap::new();
+
+        let mut sorted_histos: Vec<(Key,Histogram<u64>)> = self.histos.drain().collect();
+
+        sorted_histos.sort_by_cached_key(|a| OrderedFloat(a.1.mean()));
+
+        for (key, h) in sorted_histos {
+            let mean_duration = std::time::Duration::from_nanos(h.mean() as u64);
+
+            map.insert(key.name().to_ascii_lowercase(), format_duration(mean_duration).to_string());
+//            let (levels, name) = key_to_parts(key);
+//            let values = hist_to_values(name, h.clone(), &self.quantiles);
+
+            //self.tree.insert_values(levels, values);
         }
 
         let rendered =
-            String::from(serde_yaml::to_string(&self.tree).expect("failed to render yaml output"));
+            String::from(serde_yaml::to_string(&map).expect("failed to render yaml output"));
         self.tree.clear();
         rendered
     }
@@ -166,14 +180,19 @@ fn hist_to_values(
     name: String,
     hist: Histogram<u64>,
     quantiles: &[Quantile],
-) -> Vec<(String, u64)> {
+) -> Vec<(String, String)> {
     let mut values = Vec::new();
 
-    values.push((format!("{} count", name), hist.len()));
+    let mean_duration = std::time::Duration::from_nanos(hist.mean() as u64);
+
+    values.push(((format!("{}", name)), (format!("{}", format_duration(mean_duration)))));
+
+    /*values.push((format!("{} count", name), hist.len()));
+    hist.mean();
     for quantile in quantiles {
         let value = hist.value_at_quantile(quantile.value());
         values.push((format!("{} {}", name, quantile.label()), value));
-    }
+    } */
 
     values
 }

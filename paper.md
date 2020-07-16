@@ -1,4 +1,40 @@
+"0":
+  slot_rate_bytess_per_sec count: 44
+  slot_rate_bytess_per_sec max: 6873087
+  slot_rate_bytess_per_sec min: 2050048
+  slot_rate_bytess_per_sec p50: 3866623
+  slot_rate_bytess_per_sec p90: 5423103
+  slot_request_timing count: 44
+  slot_request_timing max: 756735
+  slot_request_timing min: 273920
+  slot_request_timing p50: 344319
+  slot_request_timing p90: 468991
+  slot_response_timing count: 44
+  slot_response_timing max: 3984588799
+  slot_response_timing min: 1101004800
+  slot_response_timing p50: 2044723199
+  slot_response_timing p90: 2275409919
+  slot_ssl_setup_timing count: 44
+  slot_ssl_setup_timing max: 136839167
+  slot_ssl_setup_timing min: 67895296
+  slot_ssl_setup_timing p50: 85131263
+  slot_ssl_setup_timing p90: 105054207
+  slot_state_setup_timing count: 44
+  slot_state_setup_timing max: 2,586,623
+  slot_state_setup_timing min: 1,006,592
+  slot_state_setup_timing p50: 1,259,519
+  slot_state_setup_timing p90: 1,896,447
+  slot_tcp_setup_timing count: 44
+  slot_tcp_setup_timing max: 52330495
+  slot_tcp_setup_timing min: 21774336
+  slot_tcp_setup_timing p50: 27443199
+  slot_tcp_setup_timing p90: 39223295
+
+
+
+
 ### A single S3 connection
+
 
 #### Limits
 

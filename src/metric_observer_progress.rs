@@ -31,7 +31,7 @@ impl ProgressObserver {
         return self.transferred;
     }
 
-    pub fn render(&mut self, size: u64, now: u64) -> String {
+    pub fn render(&mut self) -> String {
         let mut rates_display: String = String::new();
         {
             // loop through our histograms looking for all those that are 'rate bytes'
@@ -59,7 +59,7 @@ impl ProgressObserver {
             }
         }
 
-        let percent = ((self.transferred as f64 * 100.0) / (size as f64)) as u16;
+        /*let percent = ((self.transferred as f64 * 100.0) / (size as f64)) as u16;
 
         let avg_display: String;
 
@@ -71,7 +71,7 @@ impl ProgressObserver {
             avg_display = format!("{:.2}", bytes_per_sec / (1024.0 * 1024.0));
         } else {
             avg_display = format!("-");
-        }
+        } */
 
         return rates_display;
     }

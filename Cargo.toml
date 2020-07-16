@@ -1,17 +1,19 @@
 [package]
 name = "s3bfg"
-version = "0.3.0"
+version = "0.0.0"
 authors = ["Andrew Patterson <andrew@patto.net>"]
 edition = "2018"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+buffer = "*"
 clap = "3.0.0-beta.1"
 hdrhistogram = "*"
 http = "*"
 httparse = "*"
 humansize = "*"
+humantime = "*"
 futures = "*"
 indicatif = "*"
 log = "*"
@@ -19,6 +21,7 @@ metrics-core = "*"
 metrics-runtime = "*"
 metrics-util = "*"
 nix = "*"
+ordered-float ="*"
 rand = "*"
 rayon = "*"
 regex = "*"
