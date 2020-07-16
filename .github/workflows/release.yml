@@ -17,9 +17,15 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
+            musl: true
             artifact_name: s3bfg
             asset_name: s3bfg-linux-amd64
+          - os: ubuntu-latest
+            musl: false
+            artifact_name: s3bfg
+            asset_name: s3bfg-linux-musl
           - os: macos-latest
+            musl: false
             artifact_name: s3bfg
             asset_name: s3bfg-macos-amd64
 
@@ -29,10 +35,15 @@ jobs:
     - name: Put the Release Version into Environment
       run: echo ::set-env name=RELEASE_VERSION::${GITHUB_REF#refs/*/}
 
-    - name: Build
-      run: cargo build
+    - name: Build (regular)
+      if: !matrix.musl
+      run: cargo build --release
 
-
+    - name: Build (musl)
+      if: matrix.musl
+      uses: ./musl
+      with:
+        args: "cargo build --target x86_64-unknown-linux-musl --release"
 
     - name: Upload Release Asset
       id: upload-release-asset
