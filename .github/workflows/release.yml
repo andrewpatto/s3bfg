@@ -36,11 +36,11 @@ jobs:
       run: echo ::set-env name=RELEASE_VERSION::${GITHUB_REF#refs/*/}
 
     - name: Build (regular)
-      if: !matrix.musl
+      if: ${{ ! matrix.musl }}
       run: cargo build --release
 
     - name: Build (musl)
-      if: matrix.musl
+      if: ${{ matrix.musl }}
       uses: ./musl
       with:
         args: "cargo build --target x86_64-unknown-linux-musl --release"
