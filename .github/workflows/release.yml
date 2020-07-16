@@ -16,11 +16,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-20.04
             musl: true
             artifact_name: s3bfg
             asset_name: s3bfg-linux-amd64
-          - os: ubuntu-latest
+          - os: ubuntu-18.04
             musl: false
             artifact_name: s3bfg
             asset_name: s3bfg-linux-musl
