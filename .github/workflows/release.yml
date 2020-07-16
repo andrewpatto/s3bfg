@@ -36,7 +36,7 @@ jobs:
       run: echo ::set-env name=RELEASE_VERSION::${GITHUB_REF#refs/*/}
 
     - name: Set the Release Version in the Cargo.toml
-      run: sed -i -e 's/^version = .*/version = "${RELEASE_VERSION}"/' Cargo.toml
+      run: sed -i -e 's/^version = .*/version = "${{ env.RELEASE_VERSION }}"/' Cargo.toml
 
     - name: Build (regular)
       if: ${{ ! matrix.musl }}
