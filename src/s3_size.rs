@@ -25,9 +25,7 @@ use rusoto_core::signature::{Params, SignedRequest};
 ///
 /// Uses the standard S3 HEAD or GET object operation (at this point we are not yet
 /// optimising for speed)
-pub async fn find_file_size_and_correct_region(
-    cfg: &Config,
-) -> Result<(u64, Region), io::Error> {
+pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
     // we start with a guess at the region of the S3 bucket and refine as we discover more
     let mut region_attempt = Region::default();
 

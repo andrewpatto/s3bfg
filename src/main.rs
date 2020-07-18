@@ -71,7 +71,9 @@ fn main() -> std::io::Result<()> {
     if config.memory_only {
         println!(
             "Copying file s3://{}/{} ({}) to /dev/null (network->memory benchmark only)",
-            config.input_bucket_name, config.input_bucket_key, bucket_region.name()
+            config.input_bucket_name,
+            config.input_bucket_key,
+            bucket_region.name()
         );
     } else {
         println!(

@@ -61,11 +61,12 @@ pub async fn async_execute_transfer(
         config.s3_connections as usize
     ];
 
+    // from our pool of S3 ip addresses we create slots that will target them
+    // (but only as many slots as the number of s3 connections we are targetting)
     for slot in 0..config.s3_connections as usize {
         let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
-        let socket_addr = SocketAddrV4::new(tcp_addr, 443);
-        slot_sockets[slot] = socket_addr;
-        // slot_buffers[slot].lock().unwrap().resize(config.segment_size_bytes as usize, 0u8);
+
+        slot_sockets[slot] = SocketAddrV4::new(tcp_addr, 443);
     }
 
     let mut futs = FuturesUnordered::new();
@@ -74,44 +75,60 @@ pub async fn async_execute_transfer(
     let mut current_slot: usize = 0;
 
     for b in blocks {
-        // get the S3 addr that this slot targets
-        let s3_addr = slot_sockets[current_slot];
-        let mut buffer = slot_buffers[current_slot].clone();
+        // before creating our async closure we create local variables that are copies
+        // of any params - such that our spawned tokio task can own them forever
+        let local_credentials = credentials.clone();
+        let local_s3_addr = slot_sockets[current_slot];
+        let local_s3_bucket_region = bucket_region.clone();
+        let local_s3_bucket_name = config.input_bucket_name.clone();
+        let local_s3_bucket_key = config.input_bucket_key.clone();
+        let local_memory_only = config.memory_only;
+        let local_output_filename = config.output_write_filename.clone();
 
-        // create the worker to work in this slot
-        let fut = async move {
+        // construct a sink for any metrics
+        let mut block_sink = receiver.sink();
+
+        // create the worker to work in this slot and spawn it on any tokio runtime thread
+        futs.push(tokio::spawn(async move {
             let actual_work_future = async_execute_work(
                 current_slot,
-                receiver,
-                s3_addr,
-                buffer,
+                &mut block_sink,
+                &local_credentials,
+                local_s3_addr,
+                &local_s3_bucket_region,
+                local_s3_bucket_name.as_str(),
+                local_s3_bucket_key.as_str(),
                 b,
-                config,
-                credentials,
-                bucket_region,
+                local_memory_only,
+                local_output_filename,
             );
 
+            // rather than have out futures loop deal with errors we want to put
+            // some error handling here - currently none
             let finished_slot = actual_work_future.await.unwrap();
 
+            // we need to return the slot *we* were in order that the next
+            // worker that is created takes over our slot
             finished_slot
-        };
+        }));
 
         // this is only of relevance in the opening N iterations of the loop -
         // after the future we 'wait' on will define the replacement current_slot
         current_slot += 1;
 
-        futs.push(fut);
-
         if futs.len() == config.s3_connections as usize {
             // we have hit the limit of concurrency we are aiming for
-            // so we now await the finish of a worker
-            // the slot it returns is then open up for use
-            current_slot = futures::stream::StreamExt::next(&mut futs).await.unwrap();
+            // so we now await the finish of (any!) worker
+            // the slot it returns is then open for us to use as the next worker slot
+            current_slot = futures::stream::StreamExt::next(&mut futs)
+                .await
+                .unwrap()
+                .unwrap();
         }
     }
 
     // drain for remaining work from the queue
-    while let Some(item) = futures::stream::StreamExt::next(&mut futs).await {}
+    while let Some(_) = futures::stream::StreamExt::next(&mut futs).await {}
 }
 
 fn progress_worker(controller: Controller, size: u64) {
@@ -159,32 +176,39 @@ macro_rules! metric_it {
 
 async fn async_execute_work(
     slot: usize,
-    receiver: &Receiver,
-    s3_socket_addr: SocketAddrV4,
-    passed_buffer: Arc<Mutex<Vec<u8>>>,
-    block: BlockToStream,
-    cfg: &Config,
+    overall_sink: &mut Sink,
     credentials: &AwsCredentials,
-    bucket_region: &Region,
+    s3_socket_addr: SocketAddrV4,
+    s3_bucket_region: &Region,
+    s3_bucket_name: &str,
+    s3_bucket_key: &str,
+    block: BlockToStream,
+    memory_only: bool,
+    output_filename: Option<String>,
 ) -> std::result::Result<usize, BoxError> {
     // the master sink is where we collate 'overall' stats
-    let mut overall_sink = receiver.sink();
+    //    let mut overall_sink = receiver.sink();
 
     // our slot sink is used for per slot timings
     let mut slot_sink = overall_sink.scoped(format!("{}", slot).as_str());
 
+    // our thread sink is used for per thread metrics
+    let mut thread_sink = overall_sink.scoped(format!("{}", std::process::id()).as_str());
+
+    thread_sink.increment_counter("blocks_processed", 1);
+
     let now_start = slot_sink.now();
 
     metric_it!("construct_signed_request", overall_sink, true,
-        let mut http_reqest: Vec<u8> = Vec::with_capacity(1024);
+        let mut http_request: Vec<u8> = Vec::with_capacity(1024);
         let real_hostname = make_signed_get_range_request(
             credentials,
-            bucket_region,
-            cfg.input_bucket_name.as_str(),
-            cfg.input_bucket_key.as_str(),
+            s3_bucket_region,
+            s3_bucket_name,
+            s3_bucket_key,
             block.start,
             block.length,
-            &mut http_reqest,
+            &mut http_request,
         )
         .unwrap()
     );
@@ -231,7 +255,7 @@ async fn async_execute_work(
         METRIC_SLOT_REQUEST,
         slot_sink,
         true,
-        writer.write_all(http_reqest.as_slice()).await?
+        writer.write_all(http_request.as_slice()).await?
     );
 
     let now_request_sent = slot_sink.now();
@@ -303,13 +327,13 @@ async fn async_execute_work(
         //if cfg.memory_only {
         //
         //      } else {
-        if !cfg.memory_only {
+        if memory_only {
             let mut oo = std::fs::OpenOptions::new();
             oo.write(true);
             oo.create(false);
 
             let mut file_writer = tokio::fs::OpenOptions::from(oo)
-                .open(cfg.output_write_filename.as_ref().unwrap())
+                .open(output_filename.unwrap())
                 .await?;
 
             file_writer
