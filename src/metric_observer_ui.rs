@@ -42,12 +42,12 @@
 #![deny(missing_docs)]
 use crate::config::Config;
 use hdrhistogram::Histogram;
+use humantime::format_duration;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
 use metrics_util::{parse_quantiles, MetricsTree, Quantile};
-use std::collections::{HashMap, BTreeMap};
-use std::io;
-use humantime::format_duration;
 use std::cmp::Ordering;
+use std::collections::{BTreeMap, HashMap};
+use std::io;
 
 /// Builder for [`YamlObserver`].
 pub struct UiBuilder {
@@ -82,24 +82,15 @@ impl Builder for UiBuilder {
             quantiles: self.quantiles.clone(),
             tree: MetricsTree::default(),
             histos: HashMap::new(),
-            transferred: 0,
         }
     }
 }
-
-//impl Default for UiBuilder {
-//    fn default() -> Self {
-//        Self::new()
-//    }
-//}
 
 /// Observess metrics in YAML format.
 pub struct UiObserver {
     pub(crate) quantiles: Vec<Quantile>,
     pub(crate) tree: MetricsTree,
     pub(crate) histos: HashMap<Key, Histogram<u64>>,
-
-    transferred: u64,
 }
 
 impl Observer for UiObserver {
@@ -133,16 +124,19 @@ impl Drain<String> for UiObserver {
     fn drain(&mut self) -> String {
         let mut map = BTreeMap::new();
 
-        let mut sorted_histos: Vec<(Key,Histogram<u64>)> = self.histos.drain().collect();
+        let mut sorted_histos: Vec<(Key, Histogram<u64>)> = self.histos.drain().collect();
 
         sorted_histos.sort_by_cached_key(|a| OrderedFloat(a.1.mean()));
 
         for (key, h) in sorted_histos {
             let mean_duration = std::time::Duration::from_nanos(h.mean() as u64);
 
-            map.insert(key.name().to_ascii_lowercase(), format_duration(mean_duration).to_string());
-//            let (levels, name) = key_to_parts(key);
-//            let values = hist_to_values(name, h.clone(), &self.quantiles);
+            map.insert(
+                key.name().to_ascii_lowercase(),
+                format_duration(mean_duration).to_string(),
+            );
+            //            let (levels, name) = key_to_parts(key);
+            //            let values = hist_to_values(name, h.clone(), &self.quantiles);
 
             //self.tree.insert_values(levels, values);
         }
@@ -185,7 +179,10 @@ fn hist_to_values(
 
     let mean_duration = std::time::Duration::from_nanos(hist.mean() as u64);
 
-    values.push(((format!("{}", name)), (format!("{}", format_duration(mean_duration)))));
+    values.push((
+        (format!("{}", name)),
+        (format!("{}", format_duration(mean_duration))),
+    ));
 
     /*values.push((format!("{} count", name), hist.len()));
     hist.mean();

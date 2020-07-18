@@ -193,6 +193,6 @@ fn random_s3_fqdn(br: &str) -> String {
     return format!("{}.s3-{}.amazonaws.com.", chars, br);
 }
 
-fn print_type_of<T>(_: &T) {
-    println!("{}", std::any::type_name::<T>())
-}
+//fn print_type_of<T>(_: &T) {
+//    println!("{}", std::any::type_name::<T>())
+//}

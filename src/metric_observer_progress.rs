@@ -1,4 +1,3 @@
-#![deny(missing_docs)]
 use crate::config::Config;
 use crate::metric_names::{
     METRIC_OVERALL_TRANSFER_BYTES, METRIC_OVERALL_TRANSFER_STARTED, METRIC_SLOT_RATE_BYTES_PER_SEC,
@@ -10,19 +9,17 @@ use std::collections::HashMap;
 use std::io;
 
 pub struct ProgressObserver {
-    quantiles: Vec<Quantile>,
-    histos: HashMap<Key, Histogram<u64>>,
+    // copies of the histogram that we observe at the snapshot time
+    histograms: HashMap<Key, Histogram<u64>>,
 
-    started: i64,
+    // our observation of amount transferred
     transferred: u64,
 }
 
 impl ProgressObserver {
     pub fn new() -> Self {
         Self {
-            quantiles: parse_quantiles(&[0.0, 0.5, 1.0]),
-            histos: HashMap::new(),
-            started: 0,
+            histograms: HashMap::new(),
             transferred: 0,
         }
     }
@@ -38,7 +35,7 @@ impl ProgressObserver {
             // we then calculate the average of the relevant histogram and return a tuple
             // of (name, avg)
             let mut slot_rates = self
-                .histos
+                .histograms
                 .iter()
                 .filter_map(|histo| {
                     let (name, labels) = histo.0.clone().into_parts();
@@ -88,15 +85,11 @@ impl Observer for ProgressObserver {
 
     fn observe_gauge(&mut self, key: Key, value: i64) {
         let (name, labels) = key.into_parts();
-
-        if name.eq(METRIC_OVERALL_TRANSFER_STARTED) {
-            self.started = value;
-        }
     }
 
     fn observe_histogram(&mut self, key: Key, values: &[u64]) {
         let entry = self
-            .histos
+            .histograms
             .entry(key)
             .or_insert_with(|| Histogram::<u64>::new(3).expect("failed to create histogram"));
 
@@ -106,56 +99,4 @@ impl Observer for ProgressObserver {
                 .expect("failed to observe histogram value");
         }
     }
-}
-
-impl Drain<String> for ProgressObserver {
-    fn drain(&mut self) -> String {
-        for (key, h) in self.histos.drain() {
-            let (levels, name) = key_to_parts(key);
-            let values = hist_to_values(name, h.clone(), &self.quantiles);
-            //self.tree.insert_values(levels, values);
-        }
-
-        let rendered = String::from("hi"); // serde_yaml::to_string(&self.tree).expect("failed to render yaml output");
-                                           // self.tree.clear();
-        rendered
-    }
-}
-
-fn key_to_parts(key: Key) -> (Vec<String>, String) {
-    let (name, labels) = key.into_parts();
-    let mut parts = name.split('.').map(ToOwned::to_owned).collect::<Vec<_>>();
-    let name = parts.pop().expect("name didn't have a single part");
-
-    let labels = labels
-        .into_iter()
-        .map(Label::into_parts)
-        .map(|(k, v)| format!("{}=\"{}\"", k, v))
-        .collect::<Vec<_>>()
-        .join(",");
-    let label = if labels.is_empty() {
-        String::new()
-    } else {
-        format!("{{{}}}", labels)
-    };
-
-    let fname = format!("{}{}", name, label);
-
-    (parts, fname)
-}
-
-fn hist_to_values(
-    name: String,
-    hist: Histogram<u64>,
-    quantiles: &[Quantile],
-) -> Vec<(String, u64)> {
-    let mut values = Vec::new();
-
-    values.push((format!("{} count", name), hist.len()));
-    for quantile in quantiles {
-        let value = hist.value_at_quantile(quantile.value());
-        values.push((format!("{} {}", name, quantile.label()), value));
-    }
-
-    values
 }

@@ -2,14 +2,14 @@ use std::io::stdout;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::str;
-use std::sync::{Arc};
-use tokio::sync::Mutex;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
 
 use futures::stream::{FuturesUnordered, StreamExt as FuturesStreamExt};
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use metrics_core::{Builder, Drain, Observe};
-use metrics_runtime::{Receiver, Sink, Controller};
+use metrics_runtime::{Controller, Receiver, Sink};
 use rusoto_core::Region;
 use rusoto_credential::AwsCredentials;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
@@ -29,91 +29,21 @@ use crate::metric_observer_progress::ProgressObserver;
 use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
-use std::borrow::{BorrowMut, Borrow};
+use std::borrow::{Borrow, BorrowMut};
 
 pub type BoxError = std::boxed::Box<
     dyn std::error::Error + std::marker::Send + std::marker::Sync, // needed for threads
 >;
 
-pub fn async_execute(
+pub async fn async_execute_transfer(
+    receiver: &Receiver,
     s3_ip_pool: &Arc<S3IpPool>,
-    blocks: &Vec<BlockToStream>,
+    blocks: Vec<BlockToStream>,
     config: &Config,
     credentials: &AwsCredentials,
     bucket_region: &Region,
 ) {
-    println!("Starting a tokio asynchronous copy");
-
-    // a tokio runtime we will use for our async io
-    // if we are being asked to work in async mode then construct a Tokio runtime
-    // builder using any command line args set
-    let mut rt: Runtime;
-    let mut rt_description: String = String::new();
-
-    if config.asynchronous_basic {
-        rt = tokio::runtime::Builder::new()
-            .enable_all()
-            .basic_scheduler()
-            .build()
-            .unwrap();
-        rt_description.push_str("basic");
-    } else {
-        let mut temp = tokio::runtime::Builder::new();
-
-        temp.enable_all();
-        temp.threaded_scheduler();
-
-        rt_description.push_str("threaded ");
-
-        if config.asynchronous_core_threads > 0 {
-            temp.core_threads(config.asynchronous_core_threads as usize);
-            rt_description.push_str(config.asynchronous_core_threads.to_string().as_str());
-            rt_description.push_str("(core)/");
-        } else {
-            rt_description.push_str("default(core)/");
-        }
-        if config.asynchronous_max_threads > 0 {
-            temp.max_threads(config.asynchronous_max_threads as usize);
-            rt_description.push_str(config.asynchronous_max_threads.to_string().as_str());
-            rt_description.push_str("(max)");
-        } else {
-            rt_description.push_str("512(max)");
-        }
-
-        rt = temp.build().unwrap();
-    }
-
-    println!(
-        "Tokio runtime is set up to operate with {} config, utilising {} S3 connections",
-        rt_description, config.s3_connections
-    );
-
-    //let mut overall_sink = config.receiver.sink();
-
-    //overall_sink.update_gauge(METRIC_OVERALL_TRANSFER_STARTED, overall_sink.now() as i64);
-
-
-    rt.block_on(async_execute_transfer(s3_ip_pool, blocks, config, credentials, bucket_region));
-
-    println!();
-
-    rt.shutdown_timeout(Duration::from_millis(100));
-
-    let mut builder = UiBuilder::new();
-    let mut observer = builder.build();
-
-    config.receiver.controller().observe(&mut observer);
-
-    println!("{}", observer.drain());
-}
-
-async fn async_execute_transfer(s3_ip_pool: &Arc<S3IpPool>,
-                                blocks: &Vec<BlockToStream>,
-                                config: &Config,
-                                credentials: &AwsCredentials,
-                                bucket_region: &Region,) {
-
-    let controller = config.receiver.controller();
+    let controller = receiver.controller();
     let file_size_bytes = config.file_size_bytes;
 
     // start a blocking thread which displays a progress meter off our metrics
@@ -121,15 +51,15 @@ async fn async_execute_transfer(s3_ip_pool: &Arc<S3IpPool>,
         progress_worker(controller, file_size_bytes);
     });
 
-    // create a vector of the actual block structs
-    let blocks_real: Vec<BlockToStream> = blocks.iter().cloned().collect();
-
-
     let mut slot_sockets =
         vec![SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 443); config.s3_connections as usize];
 
-    let mut slot_buffers =
-        vec![Arc::new(Mutex::new(Vec::<u8>::with_capacity(config.segment_size_bytes as usize))); config.s3_connections as usize];
+    let mut slot_buffers = vec![
+        Arc::new(Mutex::new(Vec::<u8>::with_capacity(
+            config.segment_size_bytes as usize
+        )));
+        config.s3_connections as usize
+    ];
 
     for slot in 0..config.s3_connections as usize {
         let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
@@ -138,13 +68,12 @@ async fn async_execute_transfer(s3_ip_pool: &Arc<S3IpPool>,
         // slot_buffers[slot].lock().unwrap().resize(config.segment_size_bytes as usize, 0u8);
     }
 
-
     let mut futs = FuturesUnordered::new();
 
     // the current slot indicates which S3 connection slot we are making units of work for
     let mut current_slot: usize = 0;
 
-    for b in blocks_real {
+    for b in blocks {
         // get the S3 addr that this slot targets
         let s3_addr = slot_sockets[current_slot];
         let mut buffer = slot_buffers[current_slot].clone();
@@ -153,6 +82,7 @@ async fn async_execute_transfer(s3_ip_pool: &Arc<S3IpPool>,
         let fut = async move {
             let actual_work_future = async_execute_work(
                 current_slot,
+                receiver,
                 s3_addr,
                 buffer,
                 b,
@@ -192,6 +122,7 @@ fn progress_worker(controller: Controller, size: u64) {
 
     let pb = ProgressBar::new(size);
     pb.set_style(sty.clone());
+    pb.println(format!("[+] finished #"));
 
     loop {
         let mut observer = ProgressObserver::new();
@@ -228,6 +159,7 @@ macro_rules! metric_it {
 
 async fn async_execute_work(
     slot: usize,
+    receiver: &Receiver,
     s3_socket_addr: SocketAddrV4,
     passed_buffer: Arc<Mutex<Vec<u8>>>,
     block: BlockToStream,
@@ -236,22 +168,22 @@ async fn async_execute_work(
     bucket_region: &Region,
 ) -> std::result::Result<usize, BoxError> {
     // the master sink is where we collate 'overall' stats
-    let mut overall_sink = cfg.receiver.sink();
+    let mut overall_sink = receiver.sink();
 
     // our slot sink is used for per slot timings
     let mut slot_sink = overall_sink.scoped(format!("{}", slot).as_str());
 
     let now_start = slot_sink.now();
 
-
     metric_it!("construct_signed_request", overall_sink, true,
         let mut http_reqest: Vec<u8> = Vec::with_capacity(1024);
         let real_hostname = make_signed_get_range_request(
-            block.start,
-            block.length,
-            cfg,
             credentials,
             bucket_region,
+            cfg.input_bucket_name.as_str(),
+            cfg.input_bucket_key.as_str(),
+            block.start,
+            block.length,
             &mut http_reqest,
         )
         .unwrap()
@@ -275,7 +207,6 @@ async fn async_execute_work(
 
     let now_setup = slot_sink.now();
 
-
     //
     // -- initial tcp stream connection
     //
@@ -296,7 +227,10 @@ async fn async_execute_work(
 
     let mut buf_reader = tokio::io::BufReader::new(reader);
 
-    metric_it!(METRIC_SLOT_REQUEST, slot_sink, true,
+    metric_it!(
+        METRIC_SLOT_REQUEST,
+        slot_sink,
+        true,
         writer.write_all(http_reqest.as_slice()).await?
     );
 
@@ -334,49 +268,41 @@ async fn async_execute_work(
         let mut writeable_buf = vec![0u8; block.length as usize];
 
         let b = slot_sink.now();
-        slot_sink.record_timing(
-            "allocatebuffer",
-            a,
-            b,
-        );
+        slot_sink.record_timing("allocatebuffer", a, b);
 
         //let mut writeable_buf_2 = passed_buffer.lock().await;
 
         //let c = slot_sink.now();
         //slot_sink.record_timing(
-         //   "awaitlock",
-         //   b,
-         //   c,
+        //   "awaitlock",
+        //   b,
+        //   c,
         //);
 
         //writeable_buf_2.resize(block.length as usize, 0u8);
 
-       // let d = slot_sink.now();
-       // slot_sink.record_timing(
-       //     "resizebuf",
-       //     c,
-       //     d,
-       // );
+        // let d = slot_sink.now();
+        // slot_sink.record_timing(
+        //     "resizebuf",
+        //     c,
+        //     d,
+        // );
 
         // println!("len {}", writeable_buf.len());
 
         copied_bytes = buf_reader.read_exact(&mut writeable_buf.as_mut()).await? as u64;
 
         let e = slot_sink.now();
-        slot_sink.record_timing(
-            "readexact",
-            b,
-            e,
-        );
+        slot_sink.record_timing("readexact", b, e);
 
         // record that we have transferred bytes (even though we haven't written them to disk)
         overall_sink.increment_counter(METRIC_OVERALL_TRANSFER_BYTES, copied_bytes);
 
-       // println!("read {}", copied_bytes);
+        // println!("read {}", copied_bytes);
 
         //if cfg.memory_only {
-//
-  //      } else {
+        //
+        //      } else {
         if !cfg.memory_only {
             let mut oo = std::fs::OpenOptions::new();
             oo.write(true);
@@ -396,10 +322,10 @@ async fn async_execute_work(
             // in sink (including the overall bytes transferred counter)
             //copied_bytes = copy_exact(
             //    overall_sink,
-             //   &mut buf_reader,
-             //   &mut file_writer,
-             //   block.length,
-           // )
+            //   &mut buf_reader,
+            //   &mut file_writer,
+            //   block.length,
+            // )
             //.await?;
 
             file_writer.flush();

@@ -45,8 +45,6 @@ pub struct Config {
     pub fallocate: bool,
 
     pub instance_type: String,
-
-    pub receiver: Receiver,
 }
 
 const S3_ARG: &str = "s3uri";
@@ -283,11 +281,6 @@ impl Config {
                 synchronous: matches.is_present("sync"),
 
                 instance_type: aws_instance_type,
-
-                receiver: Receiver::builder()
-                    .histogram(Duration::from_secs(60 * 60), Duration::from_secs(60))
-                    .build()
-                    .expect("failed to create receiver"),
             };
         }
 

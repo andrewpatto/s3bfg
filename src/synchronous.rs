@@ -171,11 +171,12 @@ fn sync_stream_range_from_s3(
 
     let mut prelude: Vec<u8> = vec![];
     let real_hostname = make_signed_get_range_request(
-        read_start,
-        read_length,
-        cfg,
         credentials,
         bucket_region,
+        cfg.input_bucket_name.as_str(),
+        cfg.input_bucket_key.as_str(),
+        read_start,
+        read_length,
         &mut prelude,
     )
     .unwrap();

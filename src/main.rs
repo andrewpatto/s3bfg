@@ -7,23 +7,25 @@ use std::str;
 use std::sync::Arc;
 use std::thread::sleep;
 use std::time::Instant;
+use std::{thread, time::Duration};
 
 use futures::future::join_all;
 use humansize::{file_size_opts as options, FileSize};
+use metrics_core::{Builder as MetricsBuilder, Drain, Observe};
 use metrics_runtime::Receiver;
 use rusoto_credential::{
     AwsCredentials, ChainProvider, DefaultCredentialsProvider, ProfileProvider,
     ProvideAwsCredentials,
 };
-use std::{thread, time::Duration};
-use tokio::runtime::Builder;
 
-use crate::asynchronous::async_execute;
+use crate::asynchronous::async_execute_transfer;
 use crate::config::Config;
 use crate::datatype::BlockToStream;
 use crate::empty_file::create_empty_target_file;
+use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
-use crate::s3_size::find_file_size_and_correct_region_sync;
+use crate::s3_size::find_file_size_and_correct_region;
+use crate::setup_tokio::create_runtime;
 use crate::synchronous::sync_execute;
 
 mod asynchronous;
@@ -38,6 +40,7 @@ mod metric_observer_ui;
 mod s3_ip_pool;
 mod s3_request_signed;
 mod s3_size;
+mod setup_tokio;
 mod synchronous;
 
 /// The big gun of S3 file copying.
@@ -46,16 +49,36 @@ fn main() -> std::io::Result<()> {
     // parse cmd line
     let mut config = Config::new();
 
+    // we use a metrics engine to help drive optimisations and progress meters etc
+    // the intention is that this particular receiver is to record metrics across
+    // the entire run of the transfer (and not merely of a small time window)
+    let receiver = Receiver::builder()
+        // 2 hrs worth of room for stats!
+        .histogram(Duration::from_secs(2 * 60 * 60), Duration::from_secs(60))
+        .build()
+        .expect("failed to create receiver");
+
+    // we use tokio runtime for various async activity
+    let (mut rt, rt_msg) = create_runtime(&config);
+
+    // try to find details of the s3 bucket and file
+    let (total_size_bytes, bucket_region) = rt
+        .block_on(find_file_size_and_correct_region(&config))
+        .unwrap();
+
+    config.file_size_bytes = total_size_bytes;
+
     if config.memory_only {
         println!(
-            "Copying file s3://{}/{} to /dev/null (network->memory benchmark only)",
-            config.input_bucket_name, config.input_bucket_key
+            "Copying file s3://{}/{} ({}) to /dev/null (network->memory benchmark only)",
+            config.input_bucket_name, config.input_bucket_key, bucket_region.name()
         );
     } else {
         println!(
-            "Copying file s3://{}/{} to {}",
+            "Copying file s3://{}/{} ({}) to {}",
             config.input_bucket_name,
             config.input_bucket_key,
+            bucket_region.name(),
             config.output_write_filename.as_ref().unwrap()
         );
     }
@@ -66,10 +89,6 @@ fn main() -> std::io::Result<()> {
         "Aiming for {} distinct concurrent connections to S3",
         config.s3_connections
     );
-
-    let (total_size_bytes, bucket_region) = find_file_size_and_correct_region_sync(&mut config);
-
-    println!("S3 details: bucket is in region {}", bucket_region.name());
 
     if !config.memory_only {
         create_empty_target_file(
@@ -143,16 +162,10 @@ fn main() -> std::io::Result<()> {
             dns_duration.as_secs_f32()
         );
 
-        let mut dns_rt = Builder::new()
-            .enable_all()
-            .threaded_scheduler()
-            .build()
-            .unwrap();
-
         if config.aws_profile.is_some() {
             let profile_name = config.aws_profile.as_ref().unwrap();
 
-            dns_rt.block_on(async {
+            rt.block_on(async {
                 let mut pp = ProfileProvider::new().unwrap();
                 pp.set_profile(profile_name);
                 let cp = ChainProvider::with_profile_provider(pp);
@@ -164,7 +177,7 @@ fn main() -> std::io::Result<()> {
                 );
             });
         } else {
-            dns_rt.block_on(async {
+            rt.block_on(async {
                 creds = DefaultCredentialsProvider::new()
                     .unwrap()
                     .credentials()
@@ -186,13 +199,29 @@ fn main() -> std::io::Result<()> {
             &bucket_region,
         );
     } else {
-        async_execute(
+        println!(
+            "Tokio runtime is set up to operate with {} config, utilising {} S3 connections",
+            rt_msg, config.s3_connections
+        );
+
+        rt.block_on(async_execute_transfer(
+            &receiver,
             &connection_tracker,
-            &blocks,
+            blocks,
             &config,
             &creds,
             &bucket_region,
-        );
+        ));
+
+        println!();
+
+        rt.shutdown_timeout(Duration::from_millis(100));
+
+        let mut observer = UiBuilder::new().build();
+
+        receiver.controller().observe(&mut observer);
+
+        println!("{}", observer.drain());
     }
 
     let transfer_duration = Instant::now().duration_since(transfer_started);
