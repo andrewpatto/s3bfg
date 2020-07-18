@@ -28,10 +28,15 @@ use crate::s3_request_signed::make_signed_get_range_request;
 use crate::ui_console::progress_worker;
 
 use std::borrow::{Borrow, BorrowMut};
+use regex::Regex;
 
 pub type BoxError = std::boxed::Box<
     dyn std::error::Error + std::marker::Send + std::marker::Sync, // needed for threads
 >;
+
+lazy_static! {
+    static ref STATUS_REGEX: Regex = Regex::new(r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##).unwrap();
+}
 
 pub async fn async_execute_transfer(
     receiver: &Receiver,
@@ -41,26 +46,12 @@ pub async fn async_execute_transfer(
     credentials: &AwsCredentials,
     bucket_region: &Region,
 ) {
-    let controller = receiver.controller();
-    let file_size_bytes = config.file_size_bytes;
-
-    // start a blocking thread which displays a progress meter off our metrics
-    tokio::task::spawn_blocking(move || {
-        progress_worker(controller, file_size_bytes);
-    });
-
     let mut slot_sockets =
         vec![SocketAddrV4::new(Ipv4Addr::new(127, 0, 0, 1), 443); config.s3_connections as usize];
 
-    let mut slot_buffers = vec![
-        Arc::new(Mutex::new(Vec::<u8>::with_capacity(
-            config.segment_size_bytes as usize
-        )));
-        config.s3_connections as usize
-    ];
-
-    // from our pool of S3 ip addresses we create slots that will target them
-    // (but only as many slots as the number of s3 connections we are targetting)
+    // from our pool of S3 ip addresses we create slots that will target each of them
+    // up to the number of concurrent connections that have been asked for
+    // (note: possibly using the same S3 IP address more than once)
     for slot in 0..config.s3_connections as usize {
         let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
 
@@ -216,7 +207,8 @@ async fn async_execute_work(
 
     let (reader, mut writer) = tokio::io::split(stream);
 
-    let mut buf_reader = tokio::io::BufReader::new(reader);
+    // most of our network reads on linux seem to be in the ~20k range so a 256k buffer for the reader seems plenty
+    let mut buf_reader = tokio::io::BufReader::with_capacity(256*1024, reader);
 
     metric_it!(
         METRIC_SLOT_REQUEST,
@@ -224,6 +216,28 @@ async fn async_execute_work(
         true,
         writer.write_all(http_request.as_slice()).await?
     );
+
+    // parse the first line of the HTTP response - the status line - which in our S3 case is about all we care
+    // about for now
+   /* {
+        let mut status_line = String::new();
+
+        let _status_line_length = buf_reader.read_line(&mut status_line).await?;
+
+        let status_parse_result = STATUS_REGEX.captures(status_line.as_str());
+
+        if status_parse_result.is_some() {
+            let status = status_parse_result.unwrap();
+
+            let status_code = status.name("code").unwrap().as_str();
+
+            if status_code != "200" && status_code != "206" {
+                bail!(status_code);
+            }
+        } else {
+            bail!("500")
+        }
+    } */
 
     let now_request_sent = slot_sink.now();
 

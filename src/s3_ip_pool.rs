@@ -68,33 +68,28 @@ impl S3IpPool {
     /// Populates the pool with entries we fetch in parallel from a DNS server and
     /// returns the number of entries we ended up with.
     ///
-    pub fn populate_ips(
+    pub async fn populate_ips(
         &self,
         region: &Region,
         dns_server: &str,
-        desired: u16,
+        desired: Option<u16>,
         rounds: u16,
         concurrency: u16,
         round_delay: Duration,
     ) -> u16 {
-        // we use tokio for this bit because the DNS lookup library that uses
-        // tokio gave the most control over timeouts etc
-        let mut dns_rt = Builder::new()
-            .enable_all()
-            .threaded_scheduler()
-            .build()
-            .unwrap();
 
-        for round in 0..rounds {
+        for _round in 0..rounds {
             let mut dns_futures = Vec::new();
 
             for _c in 0..concurrency {
                 dns_futures.push(self.populate_a_dns(dns_server, region.name().as_ref()));
             }
 
-            let res: Vec<Result<u32, std::io::Error>> = dns_rt.block_on(join_all(dns_futures));
+            let res: Vec<Result<u32, std::io::Error>> = join_all(dns_futures).await;
 
-            print!("DNS round {:>2}: ", round + 1);
+           // let res: Vec<Result<u32, std::io::Error>> = dns_rt.block_on(join_all(dns_futures));
+
+            /* print!("DNS round {:>2}: ", round + 1);
 
             for r in res {
                 if r.is_ok() {
@@ -102,17 +97,18 @@ impl S3IpPool {
                 } else {
                     print!("{:>3}", "x");
                 }
-            }
+            } */
 
             let now_count = self.ip_count();
 
-            if now_count < desired {
-                println!(" (end total {})", now_count);
-                sleep(round_delay);
-            } else {
-                println!();
+            // if nothing has been specified as 'desired' then we just accept whatever
+            // we got in the first round
+            // or if we have reached the target
+            if desired.is_none() || now_count >= desired.unwrap() {
                 return now_count;
             }
+
+            sleep(round_delay);
         }
 
         // if we fall through to here then we've given up on reaching our 'desired' count

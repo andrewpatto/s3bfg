@@ -7,6 +7,7 @@ use metrics_core::{Builder, Drain, Key, Label, Observer};
 use metrics_util::{parse_quantiles, MetricsTree, Quantile};
 use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 pub struct ProgressObserver {
     // copies of the histogram that we observe at the snapshot time
@@ -28,9 +29,30 @@ impl ProgressObserver {
         return self.transferred;
     }
 
-    pub fn render(&mut self) -> String {
-        let mut rates_display: String = String::new();
+    pub fn render(&mut self, elapsed: Duration) -> String {
+
+        // we build a result out of whatever we want to show
+        let mut render_result: String = String::new();
+
         {
+            let avg_display: String;
+
+            let elapsed_seconds = elapsed.as_secs_f64();
+
+            if elapsed_seconds > 0.0 {
+                let bytes_per_sec = self.transferred as f64 / elapsed_seconds;
+
+                avg_display = format!("at {:.2} MiB/s", bytes_per_sec / (1024.0 * 1024.0));
+            } else {
+                avg_display = format!("at - MiB/s");
+            }
+
+            render_result.push_str(avg_display.as_str());
+        }
+        render_result.push_str(" connections rates ~ ");
+        {
+            let mut rate_displays = Vec::new();
+
             // loop through our histograms looking for all those that are 'rate bytes'
             // we then calculate the average of the relevant histogram and return a tuple
             // of (name, avg)
@@ -52,25 +74,13 @@ impl ProgressObserver {
             slot_rates.sort_by_key(|a| a.0.clone());
 
             for a in slot_rates {
-                rates_display.push_str(format!("{:5.2} ", a.1).as_str());
+                rate_displays.push(format!("{:.0}", a.1));
             }
+
+            render_result.push_str(&rate_displays.join("/"));
         }
 
-        /*let percent = ((self.transferred as f64 * 100.0) / (size as f64)) as u16;
-
-        let avg_display: String;
-
-        let elapsed_seconds = (now - self.started as u64) as f64 / (1000.0 * 1000.0 * 1000.0);
-
-        if elapsed_seconds > 0.0 {
-            let bytes_per_sec = self.transferred as f64 / elapsed_seconds;
-
-            avg_display = format!("{:.2}", bytes_per_sec / (1024.0 * 1024.0));
-        } else {
-            avg_display = format!("-");
-        } */
-
-        return rates_display;
+        return render_result;
     }
 }
 

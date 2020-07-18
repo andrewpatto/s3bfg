@@ -2,12 +2,14 @@ use metrics_runtime::Controller;
 use indicatif::{ProgressStyle, ProgressBar};
 use crate::metric_observer_progress::ProgressObserver;
 use metrics_core::Observe;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn progress_worker(controller: Controller, size: u64) {
+    let start = Instant::now();
+
     //let m = MultiProgress::new();
     let sty = ProgressStyle::default_bar()
-        .template("\r{spinner:.green} [{elapsed_precise}] {bar:20.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}")
+        .template("\r[{elapsed_precise}] {bar:20.cyan/blue} [{eta_precise}] {bytes}/{total_bytes} {msg}")
         .progress_chars("#>-");
 
     let pb = ProgressBar::new(size);
@@ -19,7 +21,10 @@ pub fn progress_worker(controller: Controller, size: u64) {
 
         controller.observe(&mut observer);
 
-        let msg = observer.render();
+        let current = Instant::now();
+        let elapsed = current - start;
+
+        let msg = observer.render(elapsed);
 
         pb.set_message(msg.as_str());
         pb.set_position(observer.transferred());

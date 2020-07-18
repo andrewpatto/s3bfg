@@ -1927,6 +1927,7 @@ dependencies = [
  "humansize",
  "humantime",
  "indicatif",
+ "lazy_static",
  "log",
  "metrics-core",
  "metrics-runtime",

@@ -81,11 +81,9 @@ pub fn sync_execute(
 
                     // we have no guarantees that we will have enough S3 IP addresses for our
                     // threads - so we have a pool and continually pick the least used
-                    let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
+                    let (tcp_addr, _tcp_count) = s3_ip_pool.use_least_used_ip();
 
                     let current_thread_index = pool.current_thread_index().unwrap_or(999);
-
-                    let current_thread_label = format!("{}", current_thread_index);
 
                     // for debug purposes we have an id for this streaming attempt
                     // let stream_id = format!("{}-{}-{}", tcp_addr, tcp_count, current_thread_index);
@@ -169,7 +167,7 @@ fn sync_stream_range_from_s3(
     //let connector = TlsConnector::new().unwrap();
 
     let mut prelude: Vec<u8> = vec![];
-    let real_hostname = make_signed_get_range_request(
+    let _real_hostname = make_signed_get_range_request(
         credentials,
         bucket_region,
         cfg.input_bucket_name.as_str(),
@@ -183,13 +181,6 @@ fn sync_stream_range_from_s3(
     // we need to use the 'real' name of the host in the SSL setup - even though the IP address
     // we are using is from a pool
     let mut ssl_stream = tcp_stream; // connector.connect(real_hostname.as_str(), tcp_stream)?;
-
-    let now_ssl_connected = sink.now();
-
-    // if debugging
-    // println!("{}", from_utf8(&prelude).unwrap());
-
-    // return Ok(());
 
     // write all to the wire
     ssl_stream.write_all(&prelude[..])?;

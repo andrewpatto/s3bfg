@@ -1,6 +1,8 @@
 extern crate nix;
 #[macro_use]
 extern crate simple_error;
+#[macro_use]
+extern crate lazy_static;
 
 use std::convert::TryInto;
 use std::str;
@@ -27,13 +29,13 @@ use crate::s3_ip_pool::S3IpPool;
 use crate::s3_size::find_file_size_and_correct_region;
 use crate::setup_tokio::create_runtime;
 use crate::synchronous::sync_execute;
+use crate::ui_console::progress_worker;
 
 mod asynchronous;
 mod config;
 mod copy_exact;
 mod datatype;
 mod empty_file;
-mod ips;
 mod metric_names;
 mod metric_observer_progress;
 mod metric_observer_ui;
@@ -100,11 +102,9 @@ fn main() -> std::io::Result<()> {
         )?;
     }
 
-    // return Ok(());
-
     let mut blocks = vec![];
 
-    // construct our units of 'copy' activity that we want to do.. whilst this is pretty simple we
+    // construct our units of 'copy' activity that we want to do.. whilst this is a pretty simple
     // splitting up of a file we could potentially do something more sophisticated
     {
         let mut starter: u64 = 0;
@@ -139,25 +139,25 @@ fn main() -> std::io::Result<()> {
 
     let total_started = Instant::now();
 
-    let connection_tracker = Arc::new(S3IpPool::new());
+    let s3_ip_pool = Arc::new(S3IpPool::new());
 
     let mut creds: AwsCredentials = AwsCredentials::default();
 
     {
         let dns_started = Instant::now();
 
-        connection_tracker.populate_ips(
+        rt.block_on(s3_ip_pool.populate_ips(
             &bucket_region,
             config.dns_server.as_str(),
             config.dns_desired_ips,
             config.dns_rounds,
             config.dns_concurrent,
             config.dns_round_delay,
-        );
+        ));
 
         let dns_duration = Instant::now().duration_since(dns_started);
 
-        let ips_db = connection_tracker.ips.lock().unwrap();
+        let ips_db = s3_ip_pool.ips.lock().unwrap();
 
         println!(
             "Discovered {} distinct S3 endpoints in {}s",
@@ -191,11 +191,17 @@ fn main() -> std::io::Result<()> {
         }
     }
 
-    let transfer_started = Instant::now();
+    let controller = receiver.controller();
+    let file_size_bytes = config.file_size_bytes;
+
+    // start a regular (non tokio runtime) thread which displays a progress meter off our metrics
+    std::thread::spawn(move || {
+        progress_worker(controller, file_size_bytes);
+    });
 
     if config.synchronous {
         sync_execute(
-            &connection_tracker,
+            &s3_ip_pool,
             &blocks,
             &config,
             &creds,
@@ -209,7 +215,7 @@ fn main() -> std::io::Result<()> {
 
         rt.block_on(async_execute_transfer(
             &receiver,
-            &connection_tracker,
+            &s3_ip_pool,
             blocks,
             &config,
             &creds,
@@ -227,19 +233,15 @@ fn main() -> std::io::Result<()> {
         println!("{}", observer.drain());
     }
 
-    let transfer_duration = Instant::now().duration_since(transfer_started);
+    let total_duration = Instant::now().duration_since(total_started);
 
     println!(
         "{}: rate MiB/sec = {} (copied {} bytes in {}s)",
         "Overall",
-        (total_size_bytes as f32 / (1024.0 * 1024.0)) / transfer_duration.as_secs_f32(),
+        (total_size_bytes as f32 / (1024.0 * 1024.0)) / total_duration.as_secs_f32(),
         total_size_bytes,
-        transfer_duration.as_secs_f32()
+        total_duration.as_secs_f32()
     );
-
-    let total_duration = Instant::now().duration_since(total_started);
-
-    println!("Total exec time was {}s", total_duration.as_secs_f32());
 
     Ok(())
 }

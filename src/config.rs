@@ -9,7 +9,7 @@ use std::time::Duration;
 /// for this particular run of the tool.
 ///
 pub struct Config {
-    // mandatory
+    // mandatory values of the S3 file that is the input or output source
     pub input_bucket_name: String,
     pub input_bucket_key: String,
 
@@ -21,7 +21,7 @@ pub struct Config {
     pub aws_profile: Option<String>,
 
     pub dns_server: String,
-    pub dns_desired_ips: u16,
+    pub dns_desired_ips: Option<u16>,
     pub dns_concurrent: u16,
     pub dns_rounds: u16,
     pub dns_round_delay: Duration,
@@ -56,6 +56,8 @@ const SYNC_THREADS_ARG: &str = "sync-threads";
 const ASYNC_CORE_THREADS_ARG: &str = "async-core-threads";
 const ASYNC_MAX_THREADS_ARG: &str = "async-max-threads";
 const ASYNC_USE_BASIC_ARG: &str = "async-use-basic";
+const DNS_DESIRED_IPS_ARGS: &str = "dns-desired-ips";
+
 
 impl Config {
     pub fn new() -> Config {
@@ -142,15 +144,14 @@ impl Config {
                 .takes_value(true))
 
 
-            .arg(Arg::with_name("dns-desired-ips")
-                .long("dns-desired-ips")
-                .about("Sets the number of S3 IP addresses we are trying to put into our pull on startup, defaults to match the number of S3 connections unless overidden here")
-                .default_value("16")
+            .arg(Arg::with_name(DNS_DESIRED_IPS_ARGS)
+                .long(DNS_DESIRED_IPS_ARGS)
+                .about("Sets the number of different S3 IP addresses we will make the DNS try to obtain")
                 .global(true)
                 .takes_value(true))
             .arg(Arg::with_name("dns-server")
                 .long("dns-server")
-                .about("Sets the DNS resolver to directly query to find S3 bucket IP addresses, defaults to Google or AWS depending on detected location")
+                .about("Sets the DNS resolver to directly query to find S3 IP addresses, defaults to Google [8.8.8.8:53] or AWS [169.254.169.253:53] depending on detected location")
                 .global(true)
                 .takes_value(true))
             .arg(Arg::with_name("dns-concurrent")
@@ -244,13 +245,12 @@ impl Config {
 
                 // DNS settings
                 dns_server,
-                // our logic here is - use the number of S3 connections as the 'desired'
-                // number of IP addresses - unless the user actually set this
-                // arg
-                dns_desired_ips: if matches.occurrences_of("dns-desired-ips") > 0 {
-                    matches.value_of_t::<u16>("dns-desired-ips").unwrap()
+                // allow the user to specify how many desired S3 ips but default to
+                // just using whatever is returned
+                dns_desired_ips: if matches.occurrences_of(DNS_DESIRED_IPS_ARGS) > 0 {
+                    Some(matches.value_of_t::<u16>(DNS_DESIRED_IPS_ARGS).unwrap())
                 } else {
-                    matches.value_of_t::<u16>("connections").unwrap()
+                    None
                 },
                 dns_concurrent: matches.value_of_t::<u16>("dns-concurrent").unwrap(),
                 dns_rounds: matches.value_of_t::<u16>("dns-rounds").unwrap(),

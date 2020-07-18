@@ -141,7 +141,7 @@ impl Drain<String> for UiObserver {
 
                 map.insert(
                     key.name().to_ascii_lowercase(),
-                    format!("{:.2} MiB/s", mean_bytes_per_sec)
+                    format!("avg rate {:.2} MiB/s", mean_bytes_per_sec)
                 );
 
             } else {
@@ -149,7 +149,7 @@ impl Drain<String> for UiObserver {
 
                 map.insert(
                     key.name().to_ascii_lowercase(),
-                    format_duration(mean_duration).to_string(),
+                    format!("avg time {}", format_duration(mean_duration).to_string()),
                 );
             }
         }
