@@ -33,6 +33,7 @@ rustls = "*"
 serde_yaml = "*"
 simple-error = "*"
 socket2 = "*"
+thread-id = "*"
 tokio = { version = "*", features = ["full"] }
 tokio-util = { version = "*", features = ["compat"] }
 tokio-rustls = "*"

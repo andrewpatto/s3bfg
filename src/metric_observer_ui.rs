@@ -81,7 +81,9 @@ impl Builder for UiBuilder {
         UiObserver {
             quantiles: self.quantiles.clone(),
             tree: MetricsTree::default(),
-            histos: HashMap::new(),
+            counters: HashMap::new(),
+            gauges: HashMap::new(),
+            histograms: HashMap::new(),
         }
     }
 }
@@ -90,23 +92,27 @@ impl Builder for UiBuilder {
 pub struct UiObserver {
     pub(crate) quantiles: Vec<Quantile>,
     pub(crate) tree: MetricsTree,
-    pub(crate) histos: HashMap<Key, Histogram<u64>>,
+    pub(crate) counters: HashMap<Key, u64>,
+    pub(crate) gauges: HashMap<Key, i64>,
+    pub(crate) histograms: HashMap<Key, Histogram<u64>>,
 }
 
 impl Observer for UiObserver {
     fn observe_counter(&mut self, key: Key, value: u64) {
-        let (levels, name) = key_to_parts(key);
-        self.tree.insert_value(levels, name, value);
+        self.counters.insert(key, value);
+        //let (levels, name) = key_to_parts(key);
+        //self.tree.insert_value(levels, name, value);
     }
 
     fn observe_gauge(&mut self, key: Key, value: i64) {
-        let (levels, name) = key_to_parts(key);
-        self.tree.insert_value(levels, name, value);
+        self.gauges.insert(key, value);
+        //let (levels, name) = key_to_parts(key);
+        //self.tree.insert_value(levels, name, value);
     }
 
     fn observe_histogram(&mut self, key: Key, values: &[u64]) {
         let entry = self
-            .histos
+            .histograms
             .entry(key)
             .or_insert_with(|| Histogram::<u64>::new(3).expect("failed to create histogram"));
 
@@ -119,31 +125,53 @@ impl Observer for UiObserver {
 }
 
 use ordered_float::OrderedFloat;
+use crate::metric_names::BYTES_PER_SEC_SUFFIX;
 
 impl Drain<String> for UiObserver {
     fn drain(&mut self) -> String {
         let mut map = BTreeMap::new();
 
-        let mut sorted_histos: Vec<(Key, Histogram<u64>)> = self.histos.drain().collect();
+        let mut sorted_histos: Vec<(Key, Histogram<u64>)> = self.histograms.drain().collect();
 
         sorted_histos.sort_by_cached_key(|a| OrderedFloat(a.1.mean()));
 
         for (key, h) in sorted_histos {
-            let mean_duration = std::time::Duration::from_nanos(h.mean() as u64);
+            if key.name().ends_with(BYTES_PER_SEC_SUFFIX) {
+                let mean_bytes_per_sec = h.mean() / (1024.0 * 1024.0);
 
+                map.insert(
+                    key.name().to_ascii_lowercase(),
+                    format!("{:.2} MiB/s", mean_bytes_per_sec)
+                );
+
+            } else {
+                let mean_duration = std::time::Duration::from_nanos(h.mean() as u64);
+
+                map.insert(
+                    key.name().to_ascii_lowercase(),
+                    format_duration(mean_duration).to_string(),
+                );
+            }
+        }
+
+        for (key, value) in self.counters.drain() {
             map.insert(
                 key.name().to_ascii_lowercase(),
-                format_duration(mean_duration).to_string(),
-            );
-            //            let (levels, name) = key_to_parts(key);
-            //            let values = hist_to_values(name, h.clone(), &self.quantiles);
+                format!("count {}", value));
+        }
 
-            //self.tree.insert_values(levels, values);
+        for (key, value) in self.gauges.drain() {
+            map.insert(
+                key.name().to_ascii_lowercase(),
+                format!("gauge {}", value));
         }
 
         let rendered =
             String::from(serde_yaml::to_string(&map).expect("failed to render yaml output"));
+
+        // clear for next time we do an observe
         self.tree.clear();
+
         rendered
     }
 }

@@ -172,8 +172,8 @@ impl Config {
                 .about("Sets the number of milliseconds between DNS rounds")
                 .takes_value(true))
 
-            .arg(Arg::with_name("basic")
-                .long("basic")
+            .arg(Arg::with_name(ASYNC_USE_BASIC_ARG)
+                .long(ASYNC_USE_BASIC_ARG)
                 .global(true)
                 .about("If specified tells us to use basic tokio runtime rather than threaded"))
             .arg(Arg::with_name("sync")

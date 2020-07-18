@@ -1,6 +1,5 @@
 use crate::config::Config;
 use crate::datatype::BlockToStream;
-use crate::metric_names::THREAD_LABELS;
 use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
@@ -146,7 +145,7 @@ fn sync_stream_range_from_s3(
     // our sink allows us to record performance metrics
     let mut root_sink = receiver.sink();
 
-    let mut sink = root_sink.scoped(THREAD_LABELS[thread_index]);
+    let mut sink = root_sink.scoped("a");
 
     // sink.add_default_labels(&[("thread", THREAD_LABELS[thread_index])]);
 

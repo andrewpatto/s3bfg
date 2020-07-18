@@ -20,15 +20,13 @@ use tokio_rustls::*;
 use crate::config::Config;
 use crate::copy_exact::copy_exact;
 use crate::datatype::BlockToStream;
-use crate::metric_names::{
-    METRIC_OVERALL_TRANSFER_BYTES, METRIC_OVERALL_TRANSFER_STARTED, METRIC_SLOT_RATE_BYTES_PER_SEC,
-    METRIC_SLOT_REQUEST, METRIC_SLOT_RESPONSE, METRIC_SLOT_SSL_SETUP, METRIC_SLOT_STATE_SETUP,
-    METRIC_SLOT_TCP_SETUP,
-};
+use crate::metric_names::{METRIC_OVERALL_TRANSFERRED_BYTES, METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC, METRIC_SLOT_REQUEST, METRIC_SLOT_RESPONSE, METRIC_SLOT_SSL_SETUP, METRIC_SLOT_STATE_SETUP, METRIC_SLOT_TCP_SETUP, METRIC_SLOT_NETWORK_RATE_BYTES_PER_SEC, METRIC_SLOT_DISK_RATE_BYTES_PER_SEC, TIMING_NANOSEC_SUFFIX};
 use crate::metric_observer_progress::ProgressObserver;
 use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
+use crate::ui_console::progress_worker;
+
 use std::borrow::{Borrow, BorrowMut};
 
 pub type BoxError = std::boxed::Box<
@@ -131,37 +129,6 @@ pub async fn async_execute_transfer(
     while let Some(_) = futures::stream::StreamExt::next(&mut futs).await {}
 }
 
-fn progress_worker(controller: Controller, size: u64) {
-    //let m = MultiProgress::new();
-    let sty = ProgressStyle::default_bar()
-        .template("\r{spinner:.green} [{elapsed_precise}] {bar:20.cyan/blue} {bytes}/{total_bytes} ({bytes_per_sec}, {eta}) {msg}")
-        .progress_chars("#>-");
-
-    let pb = ProgressBar::new(size);
-    pb.set_style(sty.clone());
-    pb.println(format!("[+] finished #"));
-
-    loop {
-        let mut observer = ProgressObserver::new();
-
-        controller.observe(&mut observer);
-
-        let msg = observer.render();
-
-        pb.set_message(msg.as_str());
-        pb.set_position(observer.transferred());
-
-        //print!("{}", msg);
-        //std::io::stdout().flush();
-        //m.join().unwrap();
-
-        std::thread::sleep(Duration::from_secs(1));
-    }
-    pb.finish_with_message("done");
-
-    // m.join_and_clear().unwrap();
-}
-
 macro_rules! metric_it {
     ($context:expr, $sink:ident, $record:expr, $($s:stmt);+) => {
         let before = $sink.now();
@@ -173,6 +140,7 @@ macro_rules! metric_it {
         }
     }
 }
+
 
 async fn async_execute_work(
     slot: usize,
@@ -186,20 +154,19 @@ async fn async_execute_work(
     memory_only: bool,
     output_filename: Option<String>,
 ) -> std::result::Result<usize, BoxError> {
-    // the master sink is where we collate 'overall' stats
-    //    let mut overall_sink = receiver.sink();
-
     // our slot sink is used for per slot timings
-    let mut slot_sink = overall_sink.scoped(format!("{}", slot).as_str());
+    let mut slot_sink = overall_sink.scoped(format!("slot-{}", slot).as_str());
 
     // our thread sink is used for per thread metrics
-    let mut thread_sink = overall_sink.scoped(format!("{}", std::process::id()).as_str());
+    let thread_unique = thread_id::get();
+
+    let mut thread_sink = overall_sink.scoped(format!("thread-{}", thread_unique).as_str());
 
     thread_sink.increment_counter("blocks_processed", 1);
 
     let now_start = slot_sink.now();
 
-    metric_it!("construct_signed_request", overall_sink, true,
+    metric_it!("overall-construct_signed_request", overall_sink, true,
         let mut http_request: Vec<u8> = Vec::with_capacity(1024);
         let real_hostname = make_signed_get_range_request(
             credentials,
@@ -213,18 +180,18 @@ async fn async_execute_work(
         .unwrap()
     );
 
-    metric_it!("tls_config_setup", overall_sink, true,
+    metric_it!("overall-tls_config_setup", overall_sink, true,
         let mut tls_config = rustls::ClientConfig::new();
         tls_config
             .root_store
             .add_server_trust_anchors(&webpki_roots::TLS_SERVER_ROOTS)
     );
 
-    metric_it!("tls_connector_setup", overall_sink, false,
+    metric_it!("overall-tls_connector_setup", overall_sink, false,
         let tls_connector = tokio_rustls::TlsConnector::from(Arc::new(tls_config))
     );
 
-    metric_it!("dnsname_ref_setup", overall_sink, false,
+    metric_it!("overall-dnsname_ref_setup", overall_sink, false,
         let domain =
             tokio_rustls::webpki::DNSNameRef::try_from_ascii_str(real_hostname.as_str()).unwrap()
     );
@@ -235,7 +202,7 @@ async fn async_execute_work(
     // -- initial tcp stream connection
     //
 
-    metric_it!(METRIC_SLOT_TCP_SETUP, slot_sink, true,
+    metric_it!(METRIC_SLOT_TCP_SETUP, overall_sink, true,
         let tcp_stream = tokio::net::TcpStream::connect(s3_socket_addr).await?
     );
 
@@ -243,7 +210,7 @@ async fn async_execute_work(
     // -- do SSL handshake and setup SSL stream
     //
 
-    metric_it!(METRIC_SLOT_SSL_SETUP, slot_sink, true,
+    metric_it!(METRIC_SLOT_SSL_SETUP, overall_sink, true,
         let mut stream = tls_connector.connect(domain, tcp_stream).await?
     );
 
@@ -292,42 +259,25 @@ async fn async_execute_work(
         let mut writeable_buf = vec![0u8; block.length as usize];
 
         let b = slot_sink.now();
-        slot_sink.record_timing("allocatebuffer", a, b);
-
-        //let mut writeable_buf_2 = passed_buffer.lock().await;
-
-        //let c = slot_sink.now();
-        //slot_sink.record_timing(
-        //   "awaitlock",
-        //   b,
-        //   c,
-        //);
-
-        //writeable_buf_2.resize(block.length as usize, 0u8);
-
-        // let d = slot_sink.now();
-        // slot_sink.record_timing(
-        //     "resizebuf",
-        //     c,
-        //     d,
-        // );
-
-        // println!("len {}", writeable_buf.len());
+        slot_sink.record_timing("networkmalloc", a, b);
 
         copied_bytes = buf_reader.read_exact(&mut writeable_buf.as_mut()).await? as u64;
 
         let e = slot_sink.now();
-        slot_sink.record_timing("readexact", b, e);
+        slot_sink.record_timing("networkread", b, e);
 
-        // record that we have transferred bytes (even though we haven't written them to disk)
-        overall_sink.increment_counter(METRIC_OVERALL_TRANSFER_BYTES, copied_bytes);
 
-        // println!("read {}", copied_bytes);
+        let network_elapsed_seconds = (e - now_start) as f64 / (1000.0 * 1000.0 * 1000.0);
 
-        //if cfg.memory_only {
-        //
-        //      } else {
-        if memory_only {
+        if network_elapsed_seconds > 0.0 {
+            let bytes_per_sec = copied_bytes as f64 / network_elapsed_seconds;
+            slot_sink.record_value(METRIC_SLOT_NETWORK_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
+        }
+
+        if !memory_only {
+
+            let before_fileopen = slot_sink.now();
+
             let mut oo = std::fs::OpenOptions::new();
             oo.write(true);
             oo.create(false);
@@ -336,11 +286,20 @@ async fn async_execute_work(
                 .open(output_filename.unwrap())
                 .await?;
 
+            let after_fileopen = slot_sink.now();
+            slot_sink.record_timing("diskopen", before_fileopen, after_fileopen);
+
             file_writer
                 .seek(std::io::SeekFrom::Start(block.start))
                 .await?;
 
+            let after_fileseek = slot_sink.now();
+            slot_sink.record_timing("diskseek", after_fileopen, after_fileseek);
+
             file_writer.write_all(&writeable_buf).await?;
+
+            let after_filewrite = slot_sink.now();
+            slot_sink.record_timing(format!("diskwrite_{}", TIMING_NANOSEC_SUFFIX), after_fileseek, after_filewrite);
 
             // note that copy_exact is responsible for generating some metrics via the passed
             // in sink (including the overall bytes transferred counter)
@@ -353,16 +312,24 @@ async fn async_execute_work(
             //.await?;
 
             file_writer.flush();
+
+            let after_fileflush = slot_sink.now();
+            slot_sink.record_timing("diskflush", after_filewrite, after_fileflush);
+
+            let disk_elapsed_seconds = (after_fileflush - before_fileopen) as f64 / (1000.0 * 1000.0 * 1000.0);
+
+            if disk_elapsed_seconds > 0.0 {
+                let bytes_per_sec = copied_bytes as f64 / disk_elapsed_seconds;
+                slot_sink.record_value(METRIC_SLOT_DISK_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
+            }
+
         }
+
+        // record that we have transferred bytes
+        overall_sink.increment_counter(METRIC_OVERALL_TRANSFERRED_BYTES, copied_bytes);
     }
 
     let now_response_received = slot_sink.now();
-
-    slot_sink.record_timing(
-        METRIC_SLOT_RESPONSE,
-        now_request_sent,
-        now_response_received,
-    );
 
     assert_eq!(copied_bytes, block.length);
 
@@ -371,7 +338,7 @@ async fn async_execute_work(
     if elapsed_seconds > 0.0 {
         let bytes_per_sec = copied_bytes as f64 / elapsed_seconds;
 
-        slot_sink.record_value(METRIC_SLOT_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
+        slot_sink.record_value(METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
     }
 
     Ok(slot)

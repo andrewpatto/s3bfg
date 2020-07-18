@@ -42,6 +42,7 @@ mod s3_request_signed;
 mod s3_size;
 mod setup_tokio;
 mod synchronous;
+mod ui_console;
 
 /// The big gun of S3 file copying.
 ///

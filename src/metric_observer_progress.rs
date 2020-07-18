@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::metric_names::{
-    METRIC_OVERALL_TRANSFER_BYTES, METRIC_OVERALL_TRANSFER_STARTED, METRIC_SLOT_RATE_BYTES_PER_SEC,
+    METRIC_OVERALL_TRANSFERRED_BYTES, METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC,
 };
 use hdrhistogram::Histogram;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
@@ -39,7 +39,7 @@ impl ProgressObserver {
                 .iter()
                 .filter_map(|histo| {
                     let (name, labels) = histo.0.clone().into_parts();
-                    if name.ends_with(METRIC_SLOT_RATE_BYTES_PER_SEC) {
+                    if name.ends_with(METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC) {
                         return Some((name, histo.1.mean() / (1024.0 * 1024.0)));
                     } else {
                         return None;
@@ -78,7 +78,7 @@ impl Observer for ProgressObserver {
     fn observe_counter(&mut self, key: Key, value: u64) {
         let (name, labels) = key.into_parts();
 
-        if name.eq(METRIC_OVERALL_TRANSFER_BYTES) {
+        if name.eq(METRIC_OVERALL_TRANSFERRED_BYTES) {
             self.transferred = value;
         }
     }

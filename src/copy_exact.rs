@@ -4,7 +4,7 @@ use std::task::{Context, Poll};
 
 use crate::metric_names::{
     METRIC_OVERALL_DISK_WRITE_OP_SIZE, METRIC_OVERALL_NETWORK_READ_OP_SIZE,
-    METRIC_OVERALL_TRANSFER_BYTES,
+    METRIC_OVERALL_TRANSFERRED_BYTES,
 };
 use futures::{ready, Future};
 use metrics_runtime::Sink;
@@ -90,7 +90,7 @@ where
                         .record_value(METRIC_OVERALL_DISK_WRITE_OP_SIZE, i as u64);
 
                     self.sink
-                        .increment_counter(METRIC_OVERALL_TRANSFER_BYTES, i as u64);
+                        .increment_counter(METRIC_OVERALL_TRANSFERRED_BYTES, i as u64);
                 }
             }
 

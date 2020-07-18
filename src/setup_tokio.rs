@@ -22,6 +22,12 @@ pub fn create_runtime(config: &Config) -> (Runtime, String) {
 
         rt_builder.enable_all();
         rt_builder.threaded_scheduler();
+        rt_builder.on_thread_start(|| {
+            // println!("thread started");
+        });
+        rt_builder.on_thread_stop(|| {
+            // println!("thread stopping");
+        });
 
         rt_description.push_str("threaded ");
 
