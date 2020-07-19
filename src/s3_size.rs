@@ -1,31 +1,34 @@
-use std::any::Any;
-use std::convert::TryInto;
-use std::error::Error;
-use std::fmt::Display;
 use std::io;
-use std::str::{from_utf8, FromStr};
-use std::time::Duration;
+use std::str::FromStr;
 
 use regex::Regex;
-use rusoto_core::credential::{
-    AutoRefreshingProvider, ChainProvider, ProfileProvider, ProvideAwsCredentials,
-};
 use rusoto_core::{HttpClient, Region};
-use rusoto_s3::util::{PreSignedRequest, PreSignedRequestOption};
-use rusoto_s3::{
-    GetObjectError, GetObjectRequest, HeadObjectError, HeadObjectRequest, S3Client, S3,
-};
-use rusoto_sts::{StsAssumeRoleSessionCredentialsProvider, StsClient};
-use tokio::runtime::Builder;
+
+use rusoto_credential::{AwsCredentials, StaticProvider};
+use rusoto_s3::{HeadObjectRequest, S3Client, S3};
 
 use crate::config::Config;
-use rusoto_core::signature::{Params, SignedRequest};
+
+pub struct S3ObjectDetails {
+    pub size_in_bytes: u64,
+
+    pub region: Region,
+
+    pub number_of_parts: u32,
+
+    pub part_size_in_bytes: u64,
+
+    pub head_etag: String,
+}
 
 /// Returns the size in bytes and real region of the S3 file that has been specified in `cfg`.
 ///
 /// Uses the standard S3 HEAD or GET object operation (at this point we are not yet
 /// optimising for speed)
-pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Region), io::Error> {
+pub async fn find_file_size_and_correct_region(
+    cfg: &Config,
+    creds: &AwsCredentials,
+) -> Result<(u64, Region), io::Error> {
     // we start with a guess at the region of the S3 bucket and refine as we discover more
     let mut region_attempt = Region::default();
 
@@ -35,46 +38,16 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
     );
 
     loop {
-        let s3_client: S3Client;
-
-        if cfg.aws_profile.is_some() {
-            println!("Using profile to obtain credentials");
-
-            // let sts = StsClient::new(Region::ApSoutheast2);
-
-            let mut profile_provider = ProfileProvider::new().unwrap();
-
-            profile_provider.set_profile(cfg.aws_profile.as_ref().unwrap());
-
-            s3_client = S3Client::new_with(
-                HttpClient::new().expect("failed to create request dispatcher"),
-                profile_provider,
-                region_attempt.clone(),
-            );
-
-        /*let assume_role_provider = StsAssumeRoleSessionCredentialsProvider::new(
-            sts,
-            "arn:aws:iam::something:role/something".to_owned(),
-            cfg.aws_profile.clone().unwrap(),
-            None, None, None, None
+        let s3_client: S3Client = S3Client::new_with(
+            HttpClient::new().expect("failed to create request dispatcher"),
+            StaticProvider::new(
+                creds.aws_access_key_id().to_string(),
+                creds.aws_secret_access_key().to_string(),
+                creds.token().clone(),
+                None,
+            ),
+            region_attempt.clone(),
         );
-
-        let auto_refreshing_provider = AutoRefreshingProvider::new(assume_role_provider); */
-        } else {
-            println!("Using default to obtain credentials");
-
-            let mut chain_provider = ChainProvider::new();
-
-            // out expectation is to be running in AWS so this is plenty of time for it to
-            // get any EC2 role credentials
-            chain_provider.set_timeout(Duration::from_millis(500));
-
-            s3_client = S3Client::new_with(
-                HttpClient::new().expect("failed to create request dispatcher"),
-                chain_provider,
-                region_attempt.clone(),
-            );
-        }
 
         let head_request = HeadObjectRequest {
             bucket: cfg.input_bucket_name.clone(),
@@ -89,6 +62,7 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
         // I presume this will be fixed at some point and we can then rewrite
         if head_result.is_err() {
             let raw_head_error_result = format!("{:#?}", head_result.unwrap_err());
+            // print!("{}", raw_head_error_result);
 
             let re_region =
                 Regex::new(r##""x-amz-bucket-region": "(?P<region>[a-z0-9-]+)""##).unwrap();
@@ -126,7 +100,11 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
             continue;
         }
 
-        let s = head_result.unwrap().content_length.unwrap() as u64;
+        let head_result_real = head_result.unwrap();
+
+        // print!("{:#?}", head_result_real);
+
+        let s = head_result_real.content_length.unwrap() as u64;
 
         return Ok((s, region_attempt.clone()));
     }
@@ -233,3 +211,53 @@ pub async fn find_file_size_and_correct_region(cfg: &Config) -> Result<(u64, Reg
     }
         */
 }
+
+/*
+Unknown(
+    BufferedHttpResponse {status: 301, body: "", headers: {"x-amz-bucket-region": "ap-southeast-2", "x-amz-request-id": "E717CA57AB42529D", "x-amz-id-2": "60+j/RZWZFsSIOSDIw0n+osotfzUjTxS98AqAfIbiq/hfPwtS84iwfplmr/Wn+gbUTVx9w1Ozd8=", "content-type": "application/xml", "transfer-encoding": "chunked", "date": "Sun, 19 Jul 2020 04:38:28 GMT", "server": "AmazonS3"} },
+)Based on AWS HEAD request we now believe the S3 bucket is in ap-southeast-2
+HeadObjectOutput {
+    accept_ranges: Some(
+        "bytes",
+    ),
+    cache_control: None,
+    content_disposition: None,
+    content_encoding: None,
+    content_language: None,
+    content_length: Some(
+        1073741824,
+    ),
+    content_type: Some(
+        "binary/octet-stream",
+    ),
+    delete_marker: None,
+    e_tag: Some(
+        "\"06ea442348b0ad54fd23c0995839db52-128\"",
+    ),
+    expiration: None,
+    expires: None,
+    last_modified: Some(
+        "Sun, 12 Jul 2020 05:27:49 GMT",
+    ),
+    metadata: Some(
+        {},
+    ),
+    missing_meta: None,
+    object_lock_legal_hold_status: None,
+    object_lock_mode: None,
+    object_lock_retain_until_date: None,
+    parts_count: None,
+    replication_status: None,
+    request_charged: None,
+    restore: None,
+    sse_customer_algorithm: None,
+    sse_customer_key_md5: None,
+    ssekms_key_id: None,
+    server_side_encryption: None,
+    storage_class: None,
+    version_id: Some(
+        "Z1TLqMTIddg6dNIoBvY7efXiRCJEc4Cu",
+    ),
+    website_redirect_location: None,
+}
+ */

@@ -40,14 +40,13 @@
 //! ```
 //!
 #![deny(missing_docs)]
-use crate::config::Config;
+
 use hdrhistogram::Histogram;
 use humantime::format_duration;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
 use metrics_util::{parse_quantiles, MetricsTree, Quantile};
-use std::cmp::Ordering;
+
 use std::collections::{BTreeMap, HashMap};
-use std::io;
 
 /// Builder for [`YamlObserver`].
 pub struct UiBuilder {
@@ -124,8 +123,8 @@ impl Observer for UiObserver {
     }
 }
 
-use ordered_float::OrderedFloat;
 use crate::metric_names::BYTES_PER_SEC_SUFFIX;
+use ordered_float::OrderedFloat;
 
 impl Drain<String> for UiObserver {
     fn drain(&mut self) -> String {
@@ -141,9 +140,8 @@ impl Drain<String> for UiObserver {
 
                 map.insert(
                     key.name().to_ascii_lowercase(),
-                    format!("avg rate {:.2} MiB/s", mean_bytes_per_sec)
+                    format!("avg rate {:.2} MiB/s", mean_bytes_per_sec),
                 );
-
             } else {
                 let mean_duration = std::time::Duration::from_nanos(h.mean() as u64);
 
@@ -155,15 +153,11 @@ impl Drain<String> for UiObserver {
         }
 
         for (key, value) in self.counters.drain() {
-            map.insert(
-                key.name().to_ascii_lowercase(),
-                format!("count {}", value));
+            map.insert(key.name().to_ascii_lowercase(), format!("count {}", value));
         }
 
         for (key, value) in self.gauges.drain() {
-            map.insert(
-                key.name().to_ascii_lowercase(),
-                format!("gauge {}", value));
+            map.insert(key.name().to_ascii_lowercase(), format!("gauge {}", value));
         }
 
         let rendered =
@@ -201,7 +195,7 @@ fn key_to_parts(key: Key) -> (Vec<String>, String) {
 fn hist_to_values(
     name: String,
     hist: Histogram<u64>,
-    quantiles: &[Quantile],
+    _quantiles: &[Quantile],
 ) -> Vec<(String, String)> {
     let mut values = Vec::new();
 

@@ -4,34 +4,32 @@ extern crate simple_error;
 #[macro_use]
 extern crate lazy_static;
 
-use std::convert::TryInto;
-use std::str;
-use std::sync::Arc;
-use std::thread::sleep;
-use std::time::Instant;
-use std::{thread, time::Duration};
 
-use futures::future::join_all;
+
+use std::convert::TryInto;
+
+use std::sync::Arc;
+
+use std::time::Duration;
+use std::time::Instant;
+
 use humansize::{file_size_opts as options, FileSize};
 use metrics_core::{Builder as MetricsBuilder, Drain, Observe};
 use metrics_runtime::Receiver;
-use rusoto_credential::{
-    AwsCredentials, ChainProvider, DefaultCredentialsProvider, ProfileProvider,
-    ProvideAwsCredentials,
-};
 
-use crate::asynchronous::async_execute_transfer;
+use crate::asynchronous_download::download_s3_file;
 use crate::config::Config;
 use crate::datatype::BlockToStream;
 use crate::empty_file::create_empty_target_file;
 use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_size::find_file_size_and_correct_region;
+use crate::setup_aws_credentials::fetch_credentials;
 use crate::setup_tokio::create_runtime;
 use crate::synchronous::sync_execute;
 use crate::ui_console::progress_worker;
 
-mod asynchronous;
+mod asynchronous_download;
 mod config;
 mod copy_exact;
 mod datatype;
@@ -42,6 +40,7 @@ mod metric_observer_ui;
 mod s3_ip_pool;
 mod s3_request_signed;
 mod s3_size;
+mod setup_aws_credentials;
 mod setup_tokio;
 mod synchronous;
 mod ui_console;
@@ -64,23 +63,26 @@ fn main() -> std::io::Result<()> {
     // we use tokio runtime for various async activity
     let (mut rt, rt_msg) = create_runtime(&config);
 
+    // a single set of credentials which we are assuming will last throughout the whole copy
+    let (creds, _creds_msg) = rt.block_on(fetch_credentials(&config));
+
     // try to find details of the s3 bucket and file
     let (total_size_bytes, bucket_region) = rt
-        .block_on(find_file_size_and_correct_region(&config))
+        .block_on(find_file_size_and_correct_region(&config, &creds))
         .unwrap();
 
     config.file_size_bytes = total_size_bytes;
 
     if config.memory_only {
         println!(
-            "Copying file s3://{}/{} ({}) to /dev/null (network->memory benchmark only)",
+            "Copying s3://{}/{} ({}) to /dev/null (network benchmark only)",
             config.input_bucket_name,
             config.input_bucket_key,
             bucket_region.name()
         );
     } else {
         println!(
-            "Copying file s3://{}/{} ({}) to {}",
+            "Copying s3://{}/{} ({}) to {} (local)",
             config.input_bucket_name,
             config.input_bucket_key,
             bucket_region.name(),
@@ -141,8 +143,6 @@ fn main() -> std::io::Result<()> {
 
     let s3_ip_pool = Arc::new(S3IpPool::new());
 
-    let mut creds: AwsCredentials = AwsCredentials::default();
-
     {
         let dns_started = Instant::now();
 
@@ -164,32 +164,13 @@ fn main() -> std::io::Result<()> {
             ips_db.len(),
             dns_duration.as_secs_f32()
         );
-
-        if config.aws_profile.is_some() {
-            let profile_name = config.aws_profile.as_ref().unwrap();
-
-            rt.block_on(async {
-                let mut pp = ProfileProvider::new().unwrap();
-                pp.set_profile(profile_name);
-                let cp = ChainProvider::with_profile_provider(pp);
-
-                creds = cp.credentials().await.unwrap();
-                println!(
-                    "Got AWS credentials {:?} using profile {}",
-                    creds, profile_name
-                );
-            });
-        } else {
-            rt.block_on(async {
-                creds = DefaultCredentialsProvider::new()
-                    .unwrap()
-                    .credentials()
-                    .await
-                    .unwrap();
-                println!("Got AWS credentials {:?} using default provider", creds);
-            });
-        }
     }
+
+    //AwsCredentials::default();
+
+    //{
+
+    //}
 
     let controller = receiver.controller();
     let file_size_bytes = config.file_size_bytes;
@@ -200,20 +181,14 @@ fn main() -> std::io::Result<()> {
     });
 
     if config.synchronous {
-        sync_execute(
-            &s3_ip_pool,
-            &blocks,
-            &config,
-            &creds,
-            &bucket_region,
-        );
+        sync_execute(&s3_ip_pool, &blocks, &config, &creds, &bucket_region);
     } else {
         println!(
             "Tokio runtime is set up to operate with {} config, utilising {} S3 connections",
             rt_msg, config.s3_connections
         );
 
-        rt.block_on(async_execute_transfer(
+        rt.block_on(download_s3_file(
             &receiver,
             &s3_ip_pool,
             blocks,

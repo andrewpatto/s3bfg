@@ -1,15 +1,11 @@
-use crate::config::Config;
-use regex::Regex;
 use rusoto_core::signature::SignedRequest;
 use rusoto_core::Region;
-use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
-use std::convert::TryInto;
+use rusoto_credential::AwsCredentials;
+
 use std::error::Error;
-use std::fs::OpenOptions;
-use std::io;
+
 use std::io::prelude::*;
-use std::io::{BufReader, Cursor};
-use std::net::{IpAddr, SocketAddr, TcpStream};
+
 use std::str;
 use std::str::from_utf8;
 
@@ -35,7 +31,7 @@ pub fn make_signed_get_range_request(
     );
 
     aws_request.set_hostname(Option::from(format!(
-        "s3-{}.amazonaws.com",
+        "s3.{}.amazonaws.com",
         bucket_region.name()
     )));
     aws_request.add_header("Accept", "*/*");

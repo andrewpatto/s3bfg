@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::iter;
-use std::net::{IpAddr, Ipv4Addr};
-use std::sync::Arc;
+use std::net::Ipv4Addr;
+
 use std::sync::Mutex;
 use std::thread::sleep;
 use std::time::Duration;
@@ -12,23 +12,20 @@ use rand::{thread_rng, Rng};
 use rusoto_core::Region;
 use tokio::net::UdpSocket;
 use tokio::prelude::*;
-use tokio::runtime::Builder;
+
 use trust_dns_client::client::{AsyncClient, ClientHandle};
 use trust_dns_client::op::DnsResponse;
 use trust_dns_client::rr::{DNSClass, Name, RData, Record, RecordType};
 use trust_dns_client::udp::UdpClientStream;
+use std::ops::Mul;
 
-/// A thread-safe data structure for pooling S3 endpoints (IP addresses)
+/// A thread-safe data structure for pooling distinct S3 endpoints (IP addresses)
 /// and recording the usage of them.
 ///
 pub struct S3IpPool {
     // a map of IP addresses that have been identified as active S3 servers, and
     // the count of the number of times we have chosen them for use
     pub ips: Mutex<BTreeMap<String, u32>>,
-
-    // a system wide mutex to indicate we are done (if lots of async activity that
-    // may not have an easy trigger to stop)
-    pub done: Mutex<bool>,
 }
 
 impl S3IpPool {
@@ -37,7 +34,6 @@ impl S3IpPool {
     pub fn new() -> S3IpPool {
         S3IpPool {
             ips: Mutex::new(BTreeMap::new()),
-            done: Mutex::new(false),
         }
     }
 
@@ -77,17 +73,18 @@ impl S3IpPool {
         concurrency: u16,
         round_delay: Duration,
     ) -> u16 {
+        let mut standard_timeout = Duration::from_millis(50);
 
         for _round in 0..rounds {
             let mut dns_futures = Vec::new();
 
             for _c in 0..concurrency {
-                dns_futures.push(self.populate_a_dns(dns_server, region.name().as_ref()));
+                dns_futures.push(self.populate_a_dns(dns_server, region.name().as_ref(), standard_timeout.clone()));
             }
 
-            let res: Vec<Result<u32, std::io::Error>> = join_all(dns_futures).await;
+            let _res: Vec<Result<u32, std::io::Error>> = join_all(dns_futures).await;
 
-           // let res: Vec<Result<u32, std::io::Error>> = dns_rt.block_on(join_all(dns_futures));
+            // let res: Vec<Result<u32, std::io::Error>> = dns_rt.block_on(join_all(dns_futures));
 
             /* print!("DNS round {:>2}: ", round + 1);
 
@@ -100,6 +97,14 @@ impl S3IpPool {
             } */
 
             let now_count = self.ip_count();
+
+            // if at the end of any round we still have 0 DNS then it is likely our timeout
+            // for DNS lookups is too short
+            if now_count == 0 {
+                standard_timeout = standard_timeout.mul(2);
+
+                continue;
+            }
 
             // if nothing has been specified as 'desired' then we just accept whatever
             // we got in the first round
@@ -125,17 +130,17 @@ impl S3IpPool {
     /// ```
     /// populate_a_dns("8.8.8.8:53", "ap-southeast-2")
     /// ```
-    async fn populate_a_dns(&self, dns_server: &str, bucket_region: &str) -> io::Result<u32> {
+    async fn populate_a_dns(&self, dns_server: &str, bucket_region: &str, max_response_duration: Duration) -> io::Result<u32> {
         let socket_addr = dns_server.parse().unwrap();
 
         // the best feature of trust_dns is the timeout that means that we won't hang around
         // waiting for packets not coming back
         let stream =
-            UdpClientStream::<UdpSocket>::with_timeout(socket_addr, Duration::from_millis(50));
+            UdpClientStream::<UdpSocket>::with_timeout(socket_addr, max_response_duration);
 
         // this little snippet should get better as tokio settles down.. its not a particularly
         // pretty pattern that trust_dns uses (though the results are good)
-        let (mut client, mut bg) = AsyncClient::connect(stream).await?;
+        let (mut client, bg) = AsyncClient::connect(stream).await?;
 
         tokio::spawn(bg);
 
@@ -186,7 +191,11 @@ fn random_s3_fqdn(br: &str) -> String {
         .take(7)
         .collect();
 
-    return format!("{}.s3-{}.amazonaws.com.", chars, br);
+    // note this is the official implied regional DNS lookups that are specified by AWS
+    // https://docs.aws.amazon.com/general/latest/gr/rande.html
+    // if we use s3-region rather than s3.region then it works for some regions but
+    // fails for us-east-1
+    return format!("{}.s3.{}.amazonaws.com.", chars, br);
 }
 
 //fn print_type_of<T>(_: &T) {

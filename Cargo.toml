@@ -1,10 +1,11 @@
 [package]
 name = "s3bfg"
+# in development build this is left at 0.0.0
+# in CI we replace this with a real version
 version = "0.0.0"
-authors = ["Andrew Patterson <andrew@patto.net>"]
+authors = ["andrewpatto"]
 edition = "2018"
-
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+build = "build.rs"
 
 [dependencies]
 buffer = "*"
@@ -42,6 +43,9 @@ trust-dns-client = "*"
 ureq = { version = "*", features = ["json"] }
 webpki = "*"
 webpki-roots = "*"
+
+[build-dependencies]
+built = "0.4"
 
 [dev-dependencies]
 criterion = "0.2"

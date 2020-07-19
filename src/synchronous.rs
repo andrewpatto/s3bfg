@@ -3,19 +3,18 @@ use crate::datatype::BlockToStream;
 use crate::metric_observer_ui::UiBuilder;
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
-use log::Level;
+
 use metrics_core::{Builder, Drain, Label, Observe, Observer};
-use metrics_runtime::Controller;
-use metrics_runtime::{exporters::LogExporter, observers::YamlBuilder, Receiver};
+
+use metrics_runtime::Receiver;
 use rayon::prelude::*;
 use regex::Regex;
-use rusoto_core::signature::SignedRequest;
+
 use rusoto_core::Region;
-use rusoto_credential::{AwsCredentials, DefaultCredentialsProvider, ProvideAwsCredentials};
-use rustls;
-use rustls::Session;
+use rusoto_credential::AwsCredentials;
+
 use socket2::{Domain, SockAddr, Socket, Type};
-use std::convert::TryInto;
+
 use std::error::Error;
 use std::fs::OpenOptions;
 use std::io;
@@ -23,11 +22,10 @@ use std::io::prelude::*;
 use std::io::{BufReader, Cursor};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
 use std::os::unix::prelude::FileExt;
-use std::str;
-use std::str::from_utf8;
+
 use std::sync::Arc;
-use std::thread::{sleep, spawn};
-use std::time::{Duration, Instant};
+
+use std::time::Duration;
 
 // use nix::fcntl::OFlag;
 // const O_DIRECT: i32 = 0x4000;
@@ -131,7 +129,7 @@ pub fn sync_execute(
 ///
 fn sync_stream_range_from_s3(
     receiver: &Receiver,
-    thread_index: usize,
+    _thread_index: usize,
     tcp_host_addr: Ipv4Addr,
     read_start: u64,
     read_length: u64,

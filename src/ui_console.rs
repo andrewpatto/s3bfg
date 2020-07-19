@@ -1,7 +1,7 @@
-use metrics_runtime::Controller;
-use indicatif::{ProgressStyle, ProgressBar};
 use crate::metric_observer_progress::ProgressObserver;
+use indicatif::{ProgressBar, ProgressStyle};
 use metrics_core::Observe;
+use metrics_runtime::Controller;
 use std::time::{Duration, Instant};
 
 pub fn progress_worker(controller: Controller, size: u64) {
@@ -9,7 +9,9 @@ pub fn progress_worker(controller: Controller, size: u64) {
 
     //let m = MultiProgress::new();
     let sty = ProgressStyle::default_bar()
-        .template("\r[{elapsed_precise}] {bar:20.cyan/blue} [{eta_precise}] {bytes}/{total_bytes} {msg}")
+        .template(
+            "\r[{elapsed_precise}] {bar:20.cyan/blue} [{eta_precise}] {bytes}/{total_bytes} {msg}",
+        )
         .progress_chars("#>-");
 
     let pb = ProgressBar::new(size);

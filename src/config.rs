@@ -1,9 +1,13 @@
 use clap::{self, App, AppSettings, Arg, ArgMatches};
-use metrics_runtime::Receiver;
+
 use regex::Regex;
 use std::fs::metadata;
 use std::path::Path;
 use std::time::Duration;
+
+pub mod built_info {
+    include!(concat!(env!("OUT_DIR"), "/built.rs"));
+}
 
 /// Stores information entered by the user and derived from the environment
 /// for this particular run of the tool.
@@ -51,6 +55,7 @@ const S3_ARG: &str = "s3uri";
 const LOCAL_ARG: &str = "local";
 
 const PROFILE_ARG: &str = "profile";
+const CONNECTIONS_ARG: &str = "connections";
 const S3_REGION_ARG: &str = "s3-region";
 const SYNC_THREADS_ARG: &str = "sync-threads";
 const ASYNC_CORE_THREADS_ARG: &str = "async-core-threads";
@@ -58,23 +63,22 @@ const ASYNC_MAX_THREADS_ARG: &str = "async-max-threads";
 const ASYNC_USE_BASIC_ARG: &str = "async-use-basic";
 const DNS_DESIRED_IPS_ARGS: &str = "dns-desired-ips";
 
-
 impl Config {
     pub fn new() -> Config {
         let matches = App::new("s3bfg")
-            .version("1.0")
-            .author("AP")
+            .version(built_info::PKG_VERSION)
+            .author("andrewpatto")
             .about("The big gun of S3 file copying")
             .setting(AppSettings::SubcommandRequiredElseHelp)
 
             .arg(Arg::with_name(PROFILE_ARG)
                 .long(PROFILE_ARG)
-                .about("An AWS profile to use for credentials")
+                .about("An AWS profile to use for credentials (note assume-role not supported yet)")
                 .global(true)
                 .takes_value(true))
 
-            .arg(Arg::with_name("connections")
-                .long("connections")
+            .arg(Arg::with_name(CONNECTIONS_ARG)
+                .long(CONNECTIONS_ARG)
                 .about("Sets the number of connections to S3 to stream simultaneously")
                 .default_value("16")
                 .global(true)
@@ -93,7 +97,7 @@ impl Config {
                     .index(2))
                 .arg(Arg::with_name("fallocate")
                     .long("fallocate")
-                    .about("If specified tells us to create the blank destination file using fallocate()"))
+                    .about("If specified tells us to create the blank destination file using fallocate() on supported unix systems"))
             )
 
           /*  .subcommand(App::new("up")
@@ -108,6 +112,17 @@ impl Config {
                     .index(2))
             )*/
 
+            /*  .subcommand(App::new("up")
+                  .about("sends file to S3")
+                  .arg(Arg::with_name("local")
+                      .about("The local path to read")
+                      .required(true)
+                      .index(1))
+                  .arg(Arg::with_name("s3")
+                      .about("The S3 destination (s3 uri, s3 https)")
+                      .required(true)
+                      .index(2))
+              )*/
 
 
 
@@ -260,7 +275,7 @@ impl Config {
 
                 memory_only: memory_only,
 
-                s3_connections: matches.value_of_t::<u16>("connections").unwrap(),
+                s3_connections: matches.value_of_t::<u16>(CONNECTIONS_ARG).unwrap(),
 
                 synchronous_threads: matches.value_of_t::<u16>(SYNC_THREADS_ARG).unwrap(),
 
@@ -284,7 +299,7 @@ impl Config {
             };
         }
 
-        if let Some(sub_up) = matches.subcommand_matches("up") {
+        if let Some(_sub_up) = matches.subcommand_matches("up") {
             println!("Up not implemented yet");
             std::process::exit(1);
         }

@@ -1,12 +1,11 @@
-use crate::config::Config;
 use crate::metric_names::{
     METRIC_OVERALL_TRANSFERRED_BYTES, METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC,
 };
 use hdrhistogram::Histogram;
 use metrics_core::{Builder, Drain, Key, Label, Observer};
-use metrics_util::{parse_quantiles, MetricsTree, Quantile};
+
 use std::collections::HashMap;
-use std::io;
+
 use std::time::Duration;
 
 pub struct ProgressObserver {
@@ -30,7 +29,6 @@ impl ProgressObserver {
     }
 
     pub fn render(&mut self, elapsed: Duration) -> String {
-
         // we build a result out of whatever we want to show
         let mut render_result: String = String::new();
 
@@ -60,7 +58,7 @@ impl ProgressObserver {
                 .histograms
                 .iter()
                 .filter_map(|histo| {
-                    let (name, labels) = histo.0.clone().into_parts();
+                    let (name, _labels) = histo.0.clone().into_parts();
                     if name.ends_with(METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC) {
                         return Some((name, histo.1.mean() / (1024.0 * 1024.0)));
                     } else {
@@ -86,15 +84,15 @@ impl ProgressObserver {
 
 impl Observer for ProgressObserver {
     fn observe_counter(&mut self, key: Key, value: u64) {
-        let (name, labels) = key.into_parts();
+        let (name, _labels) = key.into_parts();
 
         if name.eq(METRIC_OVERALL_TRANSFERRED_BYTES) {
             self.transferred = value;
         }
     }
 
-    fn observe_gauge(&mut self, key: Key, value: i64) {
-        let (name, labels) = key.into_parts();
+    fn observe_gauge(&mut self, key: Key, _value: i64) {
+        let (_name, _labels) = key.into_parts();
     }
 
     fn observe_histogram(&mut self, key: Key, values: &[u64]) {

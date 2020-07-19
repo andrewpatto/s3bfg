@@ -1,33 +1,30 @@
-use std::io::stdout;
 use std::io::Write;
 use std::net::{IpAddr, Ipv4Addr, SocketAddrV4, ToSocketAddrs};
 use std::str;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::Mutex;
 
-use futures::stream::{FuturesUnordered, StreamExt as FuturesStreamExt};
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use metrics_core::{Builder, Drain, Observe};
-use metrics_runtime::{Controller, Receiver, Sink};
+use futures::stream::FuturesUnordered;
+
+use metrics_runtime::{Receiver, Sink};
 use rusoto_core::Region;
 use rusoto_credential::AwsCredentials;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
-use tokio::runtime::Runtime;
-use tokio::stream::StreamExt as TokioStreamExt;
+
 use tokio_rustls::*;
 
 use crate::config::Config;
-use crate::copy_exact::copy_exact;
+
 use crate::datatype::BlockToStream;
-use crate::metric_names::{METRIC_OVERALL_TRANSFERRED_BYTES, METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC, METRIC_SLOT_REQUEST, METRIC_SLOT_RESPONSE, METRIC_SLOT_SSL_SETUP, METRIC_SLOT_STATE_SETUP, METRIC_SLOT_TCP_SETUP, METRIC_SLOT_NETWORK_RATE_BYTES_PER_SEC, METRIC_SLOT_DISK_RATE_BYTES_PER_SEC, TIMING_NANOSEC_SUFFIX};
-use crate::metric_observer_progress::ProgressObserver;
-use crate::metric_observer_ui::UiBuilder;
+use crate::metric_names::{
+    METRIC_OVERALL_TRANSFERRED_BYTES, METRIC_SLOT_DISK_RATE_BYTES_PER_SEC,
+    METRIC_SLOT_NETWORK_RATE_BYTES_PER_SEC, METRIC_SLOT_REQUEST, METRIC_SLOT_RESPONSE,
+    METRIC_SLOT_SSL_SETUP, METRIC_SLOT_STATE_SETUP, METRIC_SLOT_TCP_SETUP,
+    METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC, TIMING_NANOSEC_SUFFIX,
+};
+
 use crate::s3_ip_pool::S3IpPool;
 use crate::s3_request_signed::make_signed_get_range_request;
-use crate::ui_console::progress_worker;
 
-use std::borrow::{Borrow, BorrowMut};
 use regex::Regex;
 
 pub type BoxError = std::boxed::Box<
@@ -35,10 +32,13 @@ pub type BoxError = std::boxed::Box<
 >;
 
 lazy_static! {
-    static ref STATUS_REGEX: Regex = Regex::new(r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##).unwrap();
+    static ref STATUS_REGEX: Regex =
+        Regex::new(r##"HTTP/1.1 (?P<code>[0-9][0-9][0-9]) "##).unwrap();
 }
 
-pub async fn async_execute_transfer(
+/// Asynchronously transfer a file from S3.
+///
+pub async fn download_s3_file(
     receiver: &Receiver,
     s3_ip_pool: &Arc<S3IpPool>,
     blocks: Vec<BlockToStream>,
@@ -53,7 +53,7 @@ pub async fn async_execute_transfer(
     // up to the number of concurrent connections that have been asked for
     // (note: possibly using the same S3 IP address more than once)
     for slot in 0..config.s3_connections as usize {
-        let (tcp_addr, tcp_count) = s3_ip_pool.use_least_used_ip();
+        let (tcp_addr, _tcp_count) = s3_ip_pool.use_least_used_ip();
 
         slot_sockets[slot] = SocketAddrV4::new(tcp_addr, 443);
     }
@@ -79,7 +79,7 @@ pub async fn async_execute_transfer(
 
         // create the worker to work in this slot and spawn it on any tokio runtime thread
         futs.push(tokio::spawn(async move {
-            let actual_work_future = async_execute_work(
+            let actual_work_future = download_block_work(
                 current_slot,
                 &mut block_sink,
                 &local_credentials,
@@ -132,8 +132,8 @@ macro_rules! metric_it {
     }
 }
 
-
-async fn async_execute_work(
+///
+async fn download_block_work(
     slot: usize,
     overall_sink: &mut Sink,
     credentials: &AwsCredentials,
@@ -187,7 +187,7 @@ async fn async_execute_work(
             tokio_rustls::webpki::DNSNameRef::try_from_ascii_str(real_hostname.as_str()).unwrap()
     );
 
-    let now_setup = slot_sink.now();
+    let _now_setup = slot_sink.now();
 
     //
     // -- initial tcp stream connection
@@ -202,13 +202,13 @@ async fn async_execute_work(
     //
 
     metric_it!(METRIC_SLOT_SSL_SETUP, overall_sink, true,
-        let mut stream = tls_connector.connect(domain, tcp_stream).await?
+        let stream = tls_connector.connect(domain, tcp_stream).await?
     );
 
     let (reader, mut writer) = tokio::io::split(stream);
 
     // most of our network reads on linux seem to be in the ~20k range so a 256k buffer for the reader seems plenty
-    let mut buf_reader = tokio::io::BufReader::with_capacity(256*1024, reader);
+    let mut buf_reader = tokio::io::BufReader::with_capacity(256 * 1024, reader);
 
     metric_it!(
         METRIC_SLOT_REQUEST,
@@ -219,7 +219,7 @@ async fn async_execute_work(
 
     // parse the first line of the HTTP response - the status line - which in our S3 case is about all we care
     // about for now
-   /* {
+    /* {
         let mut status_line = String::new();
 
         let _status_line_length = buf_reader.read_line(&mut status_line).await?;
@@ -239,7 +239,7 @@ async fn async_execute_work(
         }
     } */
 
-    let now_request_sent = slot_sink.now();
+    let _now_request_sent = slot_sink.now();
 
     loop {
         let mut headers = String::new();
@@ -263,7 +263,7 @@ async fn async_execute_work(
         }
     }
 
-    let now_response_headers_received = slot_sink.now();
+    let _now_response_headers_received = slot_sink.now();
 
     let copied_bytes: u64;
 
@@ -280,7 +280,6 @@ async fn async_execute_work(
         let e = slot_sink.now();
         slot_sink.record_timing("networkread", b, e);
 
-
         let network_elapsed_seconds = (e - now_start) as f64 / (1000.0 * 1000.0 * 1000.0);
 
         if network_elapsed_seconds > 0.0 {
@@ -289,7 +288,6 @@ async fn async_execute_work(
         }
 
         if !memory_only {
-
             let before_fileopen = slot_sink.now();
 
             let mut oo = std::fs::OpenOptions::new();
@@ -313,7 +311,11 @@ async fn async_execute_work(
             file_writer.write_all(&writeable_buf).await?;
 
             let after_filewrite = slot_sink.now();
-            slot_sink.record_timing(format!("diskwrite_{}", TIMING_NANOSEC_SUFFIX), after_fileseek, after_filewrite);
+            slot_sink.record_timing(
+                format!("diskwrite_{}", TIMING_NANOSEC_SUFFIX),
+                after_fileseek,
+                after_filewrite,
+            );
 
             // note that copy_exact is responsible for generating some metrics via the passed
             // in sink (including the overall bytes transferred counter)
@@ -330,13 +332,13 @@ async fn async_execute_work(
             let after_fileflush = slot_sink.now();
             slot_sink.record_timing("diskflush", after_filewrite, after_fileflush);
 
-            let disk_elapsed_seconds = (after_fileflush - before_fileopen) as f64 / (1000.0 * 1000.0 * 1000.0);
+            let disk_elapsed_seconds =
+                (after_fileflush - before_fileopen) as f64 / (1000.0 * 1000.0 * 1000.0);
 
             if disk_elapsed_seconds > 0.0 {
                 let bytes_per_sec = copied_bytes as f64 / disk_elapsed_seconds;
                 slot_sink.record_value(METRIC_SLOT_DISK_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
             }
-
         }
 
         // record that we have transferred bytes
@@ -352,7 +354,10 @@ async fn async_execute_work(
     if elapsed_seconds > 0.0 {
         let bytes_per_sec = copied_bytes as f64 / elapsed_seconds;
 
-        slot_sink.record_value(METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC, bytes_per_sec as u64);
+        slot_sink.record_value(
+            METRIC_SLOT_TRANSFER_RATE_BYTES_PER_SEC,
+            bytes_per_sec as u64,
+        );
     }
 
     Ok(slot)

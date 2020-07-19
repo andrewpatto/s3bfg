@@ -1,10 +1,9 @@
 use crate::config::Config;
 use tokio::runtime::Runtime;
 
+/// Returns a tokio runtime configured based on our command line settings.
+///
 pub fn create_runtime(config: &Config) -> (Runtime, String) {
-    // a tokio runtime we will use for our async io
-    // if we are being asked to work in async mode then construct a Tokio runtime
-    // builder using any command line args set
     let rt: Runtime;
     let mut rt_description: String = String::new();
 
