@@ -64,7 +64,9 @@ fn main() -> std::io::Result<()> {
     let (mut rt, rt_msg) = create_runtime(&config);
 
     // a single set of credentials which we are assuming will last throughout the whole copy
-    let (creds, _creds_msg) = rt.block_on(fetch_credentials(&config));
+    let (creds, creds_msg) = rt.block_on(fetch_credentials(&config));
+
+    println!("{}", creds_msg);
 
     // try to find details of the s3 bucket and file
     let (total_size_bytes, bucket_region) = rt

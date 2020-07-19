@@ -20,9 +20,9 @@ pub async fn fetch_credentials(config: &Config) -> (AwsCredentials, String) {
         (
             creds.clone(),
             format!(
-                "AWS credentials (access key {}) using profile {}",
-                creds.aws_access_key_id(),
-                profile_name
+                "Profile `{}` -> {:?}",
+                profile_name,
+                creds,
             ),
         )
     } else {
@@ -35,8 +35,8 @@ pub async fn fetch_credentials(config: &Config) -> (AwsCredentials, String) {
         (
             creds.clone(),
             format!(
-                "AWS credentials (access key {}) using default provider",
-                creds.aws_access_key_id()
+                "Default provider -> {:?}",
+                creds
             ),
         )
     };
