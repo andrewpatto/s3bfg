@@ -55,6 +55,8 @@ pub async fn find_file_size_and_correct_region(
             ..Default::default()
         };
 
+        // println!("{:?}", head_request);
+
         let head_result = s3_client.head_object(head_request).await;
 
         // rustoto does not correctly follow/deal with 301 errors when a bucket is in a different region

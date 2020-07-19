@@ -323,7 +323,7 @@ fn matches_s3_uri(arg: &str) -> Option<(String, String)> {
     // This limitation doesn't affect buckets used for static website hosting, because static website hosting is only available over HTTP. For more information about virtual-host-style addressing, see Virtual Hosting of Buckets. For more information about static website hosting, see Hosting a static website on Amazon S3.
 
     let re = Regex::new(
-        r##"s3://(?P<bucket>[a-z0-9][a-z0-9-\\.]{1,61}[a-z0-9])/(?P<key>[A-Za-z0-9-/\\.]+)"##,
+        r##"s3://(?P<bucket>[a-z0-9][a-z0-9-\\.]{1,61}[a-z0-9])/(?P<key>.+)"##,
     )
     .unwrap();
 
