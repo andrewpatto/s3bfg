@@ -1,0 +1,64 @@
+[package]
+name = "s3bfg"
+# in development build this is left at 0.0.0
+# in CI we replace this with a real version
+version = "0.0.0"
+authors = ["andrewpatto"]
+edition = "2018"
+build = "build.rs"
+
+[features]
+test_aws_with_credentials = []
+
+[profile.release]
+opt-level = "z"
+lto = true
+
+[dependencies]
+anyhow = "1.0.32"
+buffer = "*"
+chrono = "*"
+clap = { version = "3.0.0-beta.1", default_features = false, features = ["std", "suggestions", "color"] }
+hdrhistogram = "*"
+http = "*"
+httparse = "*"
+humansize = "*"
+humantime = "*"
+futures = "*"
+indicatif = "*"
+lazy_static = "*"
+log = "*"
+md-5 = "0.9.1"
+metrics-core = "*"
+metrics-runtime = "*"
+metrics-util = "*"
+nix = "*"
+ordered-float ="*"
+rand = "*"
+regex = { version = "1.3.9", default_features = false, features = ["std", "perf"] }
+rusoto_core = { version = "0.45.0", default_features = false, features = ["rustls"] }
+rusoto_credential = { version = "0.45.0" }
+rusoto_s3 = { version = "0.45.0", default_features = false, features = ["rustls"] }
+rusoto_sts = { version = "0.45.0", default_features = false, features = ["rustls"] }
+rustls = { version = "0.18.1", default_features = false, features = [] }
+serde_yaml = "*"
+simple-error = "*"
+socket2 = "*"
+thread-id = "*"
+tokio = { version = "0.2.22", features = ["full"] }      # "rt-core", "rt-threaded", "stream", "tcp", "fs", "time"] }
+tokio-util = { version = "0.3.1", features = ["compat"] }
+tokio-rustls = "0.14.0"
+trust-dns-client = "*"
+ureq = { version = "1.4.0", features = ["json"] }
+webpki = "*"
+webpki-roots = "*"
+
+[build-dependencies]
+built = "0.4"
+
+[dev-dependencies]
+criterion = "0.2"
+tempfile = "*"
+sha-1 = "*"
+assert_cmd = "0.10"
+predicates = "1"

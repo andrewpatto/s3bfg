@@ -1,0 +1,5 @@
+FROM clux/muslrust:stable
+
+COPY entrypoint.sh /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
