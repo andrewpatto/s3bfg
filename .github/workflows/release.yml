@@ -44,7 +44,7 @@ jobs:
 
     - name: Build (musl)
       if: ${{ matrix.musl }}
-      uses: .github/musl
+      uses: ./.github/musl
       with:
         args: "cargo build --target x86_64-unknown-linux-musl --release"
 
